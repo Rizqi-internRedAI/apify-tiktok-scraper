@@ -13,7 +13,7 @@ import { normalizeCookies, validateCookies, getCookieHash, getTargetIdc } from '
 import { setupInterceptors, CaptchaError } from './intercept.js';
 import { setupPagination } from './paginate.js';
 import { SessionManager, detectCaptcha, detectLoggedOut } from './antibot.js';
-import { normalizeVideoItem } from './normalize/shared.js';
+import { extractSubtitleInfos, uploadSubtitles } from './subtitles.js';
 
 // Local development fallback for logging
 const logger = {
@@ -25,16 +25,37 @@ const logger = {
 
 // Configuration
 const DEFAULT_MAX_ITEMS = 200;
-const DEFAULT_STALL_LIMIT = 5;
-const DEFAULT_SCROLL_DELAY = 2000;
+
+/**
+ * Build the list of scrape jobs ({ mode, query }) from every supported input
+ * shape. Priority order when several are provided: hashtags, searchQueries,
+ * profiles (all clockworks-compatible fields, mapped to REAL keyword search
+ * — not hashtag/challenge browsing — since that's the whole point of this
+ * actor over clockworks' OR-matched hashtag search), falling back to the
+ * legacy mode+queries pair only when none of those three are present.
+ */
+function buildJobs({ hashtags, searchQueries, profiles, mode, queries }) {
+  const nonBlank = (arr) => (arr || []).map((s) => String(s ?? '').trim()).filter(Boolean);
+
+  const jobs = [
+    ...nonBlank(hashtags).map((h) => ({ mode: 'search', query: h.replace(/^#/, '') })),
+    ...nonBlank(searchQueries).map((q) => ({ mode: 'search', query: q })),
+    ...nonBlank(profiles).map((p) => ({ mode: 'profile', query: p.replace(/^@/, '') })),
+  ];
+
+  if (jobs.length === 0) {
+    for (const q of nonBlank(queries)) {
+      jobs.push({ mode: mode || 'search', query: q });
+    }
+  }
+
+  return jobs;
+}
 
 /**
  * Parse and validate input
  */
 async function parseInput(input) {
-  const mode = input.mode || 'search';
-  const queries = input.queries || [];
-  const maxItems = input.maxItems || DEFAULT_MAX_ITEMS;
   const sessionCookies = input.sessionCookies || '';
   const cookiePool = input.cookiePool || [];
   const sortBy = input.sortBy || 'relevance';
@@ -47,13 +68,29 @@ async function parseInput(input) {
   const downloadMedia = input.downloadMedia || false;
   const outputSchema = input.outputSchema || 'compat';
 
+  // clockworks-compatible fields (red-pharmatiq-api sends these) plus the
+  // legacy mode/queries pair for backward-compatible manual runs.
+  const jobs = buildJobs({
+    hashtags: input.hashtags,
+    searchQueries: input.searchQueries,
+    profiles: input.profiles,
+    mode: input.mode,
+    queries: input.queries,
+  });
+
+  const maxItems = input.maxItems || input.resultsPerPage || DEFAULT_MAX_ITEMS;
+  const proxyCountryCode = input.proxyCountryCode || null;
+  const downloadSubtitles = input.downloadSubtitlesOptions === 'DOWNLOAD_SUBTITLES';
+
   // Validate required fields
   if (!sessionCookies && (!cookiePool || cookiePool.length === 0)) {
     throw new Error('Either sessionCookies or cookiePool must be provided');
   }
 
-  if (!queries.length) {
-    throw new Error('At least one query is required');
+  if (!jobs.length) {
+    throw new Error(
+      'At least one of hashtags, searchQueries, profiles, or (mode + queries) is required'
+    );
   }
 
   // Parse cookies - support both sessionCookies and cookiePool
@@ -80,8 +117,7 @@ async function parseInput(input) {
     : null;
 
   return {
-    mode,
-    queries,
+    jobs,
     maxItems,
     cookies,
     cookiePool,
@@ -93,6 +129,8 @@ async function parseInput(input) {
     commentsPerPost,
     downloadMedia,
     outputSchema,
+    proxyCountryCode,
+    downloadSubtitles,
   };
 }
 
@@ -191,16 +229,18 @@ function publishTimeToCode(within) {
 }
 
 /**
- * Check a normalized item against the dateRange filter.
+ * Check a normalized wrapper item against the dateRange filter.
  * Applies to posts only (comments are left untouched); posts with an
  * unknown/invalid timestamp are excluded when a range is active.
  */
-function isWithinDateRange(item, range) {
+function isWithinDateRange(wrapperItem, range) {
   if (!range) return true;
-  if (item._type === 'comment') return true;
-  if (!item.timestamp) return false;
+  const compat = wrapperItem.compat;
+  if (!compat) return true;
+  if (compat._type === 'comment') return true;
+  if (!compat.timestamp) return false;
 
-  const ms = new Date(item.timestamp).getTime();
+  const ms = new Date(compat.timestamp).getTime();
   if (Number.isNaN(ms)) return false;
 
   if (range.from !== null && ms < range.from) return false;
@@ -209,34 +249,56 @@ function isWithinDateRange(item, range) {
 }
 
 /**
- * Filter item based on outputSchema setting
+ * Turn a normalized wrapper item ({ id, compat, clockworks, raw }) into the
+ * final dataset record, based on the outputSchema setting.
  */
-function filterByOutputSchema(item, schema) {
-  if (schema === 'native') return item;
-  
+function filterByOutputSchema(wrapperItem, schema) {
+  const { compat, clockworks, raw } = wrapperItem;
+
+  if (schema === 'clockworks') return clockworks;
+  if (schema === 'native') return raw;
+
   if (schema === 'both') {
-    return { ...item, _raw: item };
+    return { ...compat, _raw: raw };
   }
-  
+
   // 'compat' - Threads-style format (only fields from sample-output.json)
+  if (!compat) return null;
   return {
-    post_id: item.post_id,
-    shortcode: item.shortcode,
-    post_url: item.post_url,
-    text: item.text,
-    timestamp: item.timestamp,
-    user: item.user,
-    likes: item.likes,
-    replies: item.replies,
-    reposts: item.reposts,
-    quotes: item.quotes,
-    reshares: item.reshares,
-    views: item.views,
-    images: item.images,
-    videos: item.videos,
-    is_reply: item.is_reply,
-    source: item.source,
+    post_id: compat.post_id,
+    shortcode: compat.shortcode,
+    post_url: compat.post_url,
+    text: compat.text,
+    timestamp: compat.timestamp,
+    user: compat.user,
+    likes: compat.likes,
+    replies: compat.replies,
+    reposts: compat.reposts,
+    quotes: compat.quotes,
+    reshares: compat.reshares,
+    views: compat.views,
+    images: compat.images,
+    videos: compat.videos,
+    is_reply: compat.is_reply,
+    source: compat.source,
+    comments: compat.comments,
   };
+}
+
+/**
+ * Fetch and re-host TikTok's native subtitles for one video item into this
+ * run's key-value store, mutating item.clockworks.videoMeta.subtitleLinks in
+ * place. Gated behind config.downloadSubtitles; never throws.
+ */
+async function attachSubtitles(page, wrapperItem, kvStore, log) {
+  if (!wrapperItem.clockworks || !wrapperItem.raw) return;
+  const infos = extractSubtitleInfos(wrapperItem.raw, log);
+  if (!infos.length) return;
+
+  const links = await uploadSubtitles(page, wrapperItem.id, infos, kvStore, log);
+  if (links.length) {
+    wrapperItem.clockworks.videoMeta.subtitleLinks = links;
+  }
 }
 
 /**
@@ -244,55 +306,57 @@ function filterByOutputSchema(item, schema) {
  */
 async function scrapeComments(page, videoId, authorUsername, config) {
   if (!config.includeComments) return [];
-  
+
   const log = Actor.log;
   log.info(`Scraping comments for video: ${videoId}`);
-  
+
   const comments = [];
   const dedupSet = new Set();
-  
+
   // Setup comment interceptor
   setupInterceptors(page, {
     endpoints: ['/api/comment/list/'],
     dedupSet,
     onItem: (item) => {
-      if (item._type === 'comment') {
-        comments.push(item);
+      if (item.compat && item.compat._type === 'comment') {
+        comments.push(item.compat);
       }
     },
     onError: (error) => {
       log.warning(`Comment interceptor error: ${error.message}`);
     },
   });
-  
+
   // Navigate to video page
   await page.goto(`https://www.tiktok.com/@${authorUsername}/video/${videoId}`, {
     waitUntil: 'domcontentloaded',
     timeout: 30000,
   });
-  
+
   // Wait for comments to load
   await page.waitForTimeout(2000);
-  
+
   // Scroll to load more comments
   await setupPagination(page, {
     targetCount: config.commentsPerPost,
     stallLimit: 3,
     scrollDelay: 1500,
   });
-  
+
   return comments;
 }
 
 /**
- * Main scraping function for a single query
+ * Main scraping function for a single job ({ mode, query })
  */
-async function scrapeQuery(page, context, query, config) {
+async function scrapeQuery(page, context, job, config, kvStore) {
   const { log } = context;
+  const { mode, query } = job;
   const results = [];
   const dedupSet = new Set();
+  const subtitleTasks = [];
 
-  log.info(`Scraping query: "${query}"`);
+  log.info(`Scraping ${mode} job: "${query}"`);
 
   if (config.dateRange) {
     const fmt = (ms) => (ms === null ? '∞' : new Date(ms).toISOString());
@@ -302,7 +366,7 @@ async function scrapeQuery(page, context, query, config) {
   let skippedByDate = 0;
 
   // Build URL
-  const url = buildUrl(config.mode, query, config.sortBy, config.publishedWithin, config.language);
+  const url = buildUrl(mode, query, config.sortBy, config.publishedWithin, config.language);
   log.info(`Navigating to: ${url}`);
 
   // Setup interceptor BEFORE navigation - captures initial search API response
@@ -315,12 +379,17 @@ async function scrapeQuery(page, context, query, config) {
       '/api/comment/list/',
     ],
     dedupSet,
+    meta: { inputValue: query },
     onItem: (item) => {
       if (!isWithinDateRange(item, config.dateRange)) {
         skippedByDate += 1;
         return;
       }
       results.push(item);
+
+      if (config.downloadSubtitles) {
+        subtitleTasks.push(attachSubtitles(page, item, kvStore, log));
+      }
     },
     onError: (error) => {
       log.warning(`Interceptor error: ${error.message}`);
@@ -363,11 +432,9 @@ async function scrapeQuery(page, context, query, config) {
     log.warning('Timed out waiting for search results/captcha selector; continuing anyway');
   }
 
-  const { detectCaptcha } = await import('./antibot.js');
   try {
     if (await detectCaptcha(page)) {
-      const { CaptchaError: CaptchaErr } = await import('./intercept.js');
-      throw new CaptchaErr(10000, 'Captcha wall detected after navigation');
+      throw new CaptchaError(10000, 'Captcha wall detected after navigation');
     }
   } catch (err) {
     if (err?.name === 'CaptchaError') throw err;
@@ -390,20 +457,27 @@ async function scrapeQuery(page, context, query, config) {
     },
   });
 
-  log.info(`Scraped ${results.length} items for query: "${query}"` +
+  log.info(`Scraped ${results.length} items for ${mode} job: "${query}"` +
     (skippedByDate > 0 ? ` (skipped ${skippedByDate} outside date range)` : ''));
+
+  // Wait for any in-flight subtitle downloads/uploads to finish before this
+  // job's items are pushed to the dataset.
+  if (subtitleTasks.length) {
+    log.info(`Waiting for ${subtitleTasks.length} subtitle fetch(es) to finish`);
+    await Promise.all(subtitleTasks);
+  }
 
   // Optionally scrape comments for each video
   if (config.includeComments) {
-    const videosWithComments = results.filter((r) => r.videos && r.videos.length > 0);
+    const videosWithComments = results.filter((r) => r.compat?.videos && r.compat.videos.length > 0);
     log.info(`Scraping comments for ${videosWithComments.length} videos`);
-    
+
     for (const video of videosWithComments.slice(0, 10)) {
       try {
-        const comments = await scrapeComments(page, video.post_id, video.user.username, config);
-        video.comments = comments;
+        const comments = await scrapeComments(page, video.compat.post_id, video.compat.user.username, config);
+        video.compat.comments = comments;
       } catch (error) {
-        log.warning(`Failed to scrape comments for ${video.post_id}: ${error.message}`);
+        log.warning(`Failed to scrape comments for ${video.compat.post_id}: ${error.message}`);
       }
     }
   }
@@ -420,7 +494,7 @@ async function scrapeQuery(page, context, query, config) {
  */
 Actor.main(async () => {
   let input = await Actor.getInput();
-  
+
   // Fallback: read from local input file when not on Apify platform
   if (!input || Object.keys(input).length === 0) {
     try {
@@ -430,14 +504,17 @@ Actor.main(async () => {
       input = {};
     }
   }
-  
+
   const log = Actor.log || logger;
 
   log.info('Starting TikTok Scraper Actor');
 
   // Parse and validate input
   const config = await parseInput(input);
-  log.info(`Mode: ${config.mode}, Queries: ${config.queries.join(', ')}, Max Items: ${config.maxItems}`);
+  log.info(
+    `Jobs: ${config.jobs.map((j) => `${j.mode}:${j.query}`).join(', ')}, Max Items: ${config.maxItems}` +
+      (config.downloadSubtitles ? ', subtitles: on' : '')
+  );
 
   // Calculate session ID for proxy pinning
   const cookieHash = getCookieHash(config.cookies);
@@ -449,6 +526,16 @@ Actor.main(async () => {
     ? config.cookiePool.map((c) => normalizeCookies(c.cookies))
     : [config.cookies];
   const sessionManager = new SessionManager(sessions, { maxRetriesPerSession: 3 });
+
+  // Shared key-value store for this run - used to persist refreshed cookies,
+  // run metadata, and (when downloadSubtitlesOptions is on) re-hosted
+  // subtitle text so red-pharmatiq-api can fetch it without a TikTok cookie.
+  const kvStore = await Actor.openKeyValueStore();
+
+  // proxyCountryCode (clockworks-compatible input field) takes priority over
+  // the tt-target-idc-derived guess when choosing the proxy exit region.
+  const proxyCountryCode = config.proxyCountryCode
+    || (targetIdc === 'alisg' ? 'SG' : (targetIdc === 'useast2a' ? 'US' : undefined));
 
   // Create crawler
   const crawlerOptions = {
@@ -489,27 +576,30 @@ Actor.main(async () => {
       },
     ],
     async requestHandler({ page, request }) {
-      const query = request.userData.query;
+      const job = request.userData.job;
       const currentSession = sessionManager.getCurrent();
 
       // Inject cookies from current session
       const context = page.context();
       await context.addCookies(currentSession);
 
-      // Scrape the query
+      // Scrape the job
       try {
-        const result = await scrapeQuery(page, { log: Actor.log || logger }, query, config);
+        const result = await scrapeQuery(page, { log: Actor.log || logger }, job, config, kvStore);
 
         // Push items to dataset
+        let pushed = 0;
         for (const item of result.items) {
           const filtered = filterByOutputSchema(item, config.outputSchema);
+          if (filtered === null || filtered === undefined) continue;
           await Actor.pushData(filtered);
+          pushed += 1;
         }
 
-        log.info(`Pushed ${result.items.length} items to dataset for query: "${query}"`);
+        log.info(`Pushed ${pushed} items to dataset for ${job.mode} job: "${job.query}"`);
       } catch (error) {
         // Handle session rotation on failure
-        log.error(`Error scraping "${query}": ${error.message}`);
+        log.error(`Error scraping "${job.query}": ${error.message}`);
         if (sessionManager.hasRemaining()) {
           sessionManager.markFailed(error.message);
           const nextSession = sessionManager.rotate();
@@ -532,21 +622,20 @@ Actor.main(async () => {
   if (Actor.apifyClient) {
     crawlerOptions.proxyConfiguration = await Actor.createProxyConfiguration({
       groups: ['RESIDENTIAL'],
-      countryCode: targetIdc === 'alisg' ? 'SG' : (targetIdc === 'useast2a' ? 'US' : undefined),
+      countryCode: proxyCountryCode,
     });
   } else {
     // Local development - try to use Apify Proxy if available
     try {
       crawlerOptions.proxyConfiguration = await Actor.createProxyConfiguration({
         groups: ['RESIDENTIAL'],
+        countryCode: proxyCountryCode,
       });
     } catch {
       // Try custom proxy URL from environment
       const customProxyUrl = process.env.APIFY_PROXY_URL || process.env.PROXY_URL;
       if (customProxyUrl) {
         log.info(`Using custom proxy: ${customProxyUrl}`);
-        // Parse proxy URL to extract components
-        const url = new URL(customProxyUrl);
         crawlerOptions.proxyConfiguration = {
           proxyUrls: [customProxyUrl],
         };
@@ -566,12 +655,12 @@ Actor.main(async () => {
 
   const crawler = new PlaywrightCrawler(crawlerOptions, Configuration.getGlobalConfig());
 
-  // Queue all queries as requests
-  const requests = config.queries.map((query) => ({
-    url: buildUrl(config.mode, query, config.sortBy, config.publishedWithin, config.language),
-    userData: { query },
+  // Queue all jobs as requests
+  const requests = config.jobs.map((job) => ({
+    url: buildUrl(job.mode, job.query, config.sortBy, config.publishedWithin, config.language),
+    userData: { job },
   }));
-  
+
   await crawler.addRequests(requests);
 
   // Run crawler
@@ -580,7 +669,6 @@ Actor.main(async () => {
   // Persist refreshed cookies back to KV store
   // msToken rotates constantly and a stale one degrades results
   try {
-    const kvStore = await Actor.openKeyValueStore();
     const refreshedCookies = sessionManager.getCurrent();
     await kvStore.setValue('session_cookies_latest', refreshedCookies);
     log.info('Persisted refreshed cookies to KV store');
@@ -591,7 +679,6 @@ Actor.main(async () => {
   // Download media if requested
   if (config.downloadMedia) {
     log.info('Downloading media files to KV store...');
-    const kvStore = await Actor.openKeyValueStore();
     // Note: media download would need access to all scraped items
     // This would be handled per-request in a production implementation
     log.info('Media download complete');
@@ -605,8 +692,7 @@ Actor.main(async () => {
   // Output metadata
   await Actor.setValue('OUTPUT_METADATA', {
     scraped_at: new Date().toISOString(),
-    queries: config.queries,
-    mode: config.mode,
+    jobs: config.jobs,
     total_items: stats?.itemCount || 0,
   });
 
