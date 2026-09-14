@@ -5,11 +5,13 @@
  */
 
 import { normalizeVideoItem } from './shared.js';
+import { normalizeClockworksItem } from './clockworks.js';
 
 /**
- * Normalize challenge/hashtag feed response
+ * Normalize challenge/hashtag feed response.
+ * Returns wrapper objects: { id, compat, clockworks, raw }.
  */
-export function normalizeChallengeItem(data, seenIds) {
+export function normalizeChallengeItem(data, seenIds, meta = {}) {
   const items = data.itemList || data.item_list || data.data || [];
   const results = [];
 
@@ -19,9 +21,14 @@ export function normalizeChallengeItem(data, seenIds) {
     if (seenIds.has(item.id)) continue;
     seenIds.add(item.id);
 
-    const normalized = normalizeVideoItem(item);
-    if (normalized) {
-      results.push(normalized);
+    const compat = normalizeVideoItem(item);
+    if (compat) {
+      results.push({
+        id: item.id,
+        compat,
+        clockworks: normalizeClockworksItem(item, meta),
+        raw: item,
+      });
     }
   }
 

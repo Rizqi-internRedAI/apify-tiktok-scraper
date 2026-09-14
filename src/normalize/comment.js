@@ -5,7 +5,9 @@
  */
 
 /**
- * Normalize comment list response
+ * Normalize comment list response.
+ * Returns wrapper objects: { id, compat, clockworks, raw } — clockworks is
+ * always null, comments aren't part of that contract.
  */
 export function normalizeCommentList(data, seenIds) {
   const comments = data.comments || data.data || [];
@@ -19,7 +21,12 @@ export function normalizeCommentList(data, seenIds) {
 
     const normalized = normalizeComment(comment);
     if (normalized) {
-      results.push(normalized);
+      results.push({
+        id: comment.cid,
+        compat: normalized,
+        clockworks: null,
+        raw: comment,
+      });
     }
   }
 

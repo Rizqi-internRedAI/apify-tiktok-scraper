@@ -6,11 +6,13 @@
  */
 
 import { normalizeVideoItem } from './shared.js';
+import { normalizeClockworksItem } from './clockworks.js';
 
 /**
- * Normalize search response (general/full and item/full)
+ * Normalize search response (general/full and item/full).
+ * Returns wrapper objects: { id, compat, clockworks, raw }.
  */
-export function normalizeSearchItem(data, seenIds) {
+export function normalizeSearchItem(data, seenIds, meta = {}) {
   const items = data.data || [];
   const results = [];
 
@@ -21,9 +23,14 @@ export function normalizeSearchItem(data, seenIds) {
     if (seenIds.has(item.id)) continue;
     seenIds.add(item.id);
 
-    const normalized = normalizeVideoItem(item);
-    if (normalized) {
-      results.push(normalized);
+    const compat = normalizeVideoItem(item);
+    if (compat) {
+      results.push({
+        id: item.id,
+        compat,
+        clockworks: normalizeClockworksItem(item, meta),
+        raw: item,
+      });
     }
   }
 
@@ -33,7 +40,7 @@ export function normalizeSearchItem(data, seenIds) {
 /**
  * Normalize general search results (videos + user cards mixed)
  */
-export function normalizeSearchGeneral(data, seenIds) {
+export function normalizeSearchGeneral(data, seenIds, meta = {}) {
   const items = data.data || [];
   const results = [];
 
@@ -43,15 +50,27 @@ export function normalizeSearchGeneral(data, seenIds) {
       const item = entry.item;
       if (item && item.id && !seenIds.has(item.id)) {
         seenIds.add(item.id);
-        const normalized = normalizeVideoItem(item);
-        if (normalized) results.push(normalized);
+        const compat = normalizeVideoItem(item);
+        if (compat) {
+          results.push({
+            id: item.id,
+            compat,
+            clockworks: normalizeClockworksItem(item, meta),
+            raw: item,
+          });
+        }
       }
     } else if (entry.type === 4) {
-      // User card
+      // User card — not part of the clockworks video-item contract.
       const user = entry.item;
       if (user && user.id && !seenIds.has(`user_${user.id}`)) {
         seenIds.add(`user_${user.id}`);
-        results.push(normalizeUserCard(user));
+        results.push({
+          id: `user_${user.id}`,
+          compat: normalizeUserCard(user),
+          clockworks: null,
+          raw: user,
+        });
       }
     }
   }

@@ -52,6 +52,7 @@ export function setupInterceptors(page, options = {}) {
     onError = () => {},
     endpoints = Object.values(ENDPOINTS),
     dedupSet = null,
+    meta = {},
   } = options;
 
   const seenIds = dedupSet || new Set();
@@ -83,7 +84,7 @@ export function setupInterceptors(page, options = {}) {
       }
 
       // Route to appropriate normalizer
-      const normalized = normalizeResponse(json, matchedEndpoint, seenIds);
+      const normalized = normalizeResponse(json, matchedEndpoint, seenIds, meta);
 
       if (normalized && normalized.length > 0) {
         for (const item of normalized) {
@@ -117,16 +118,16 @@ export function setupInterceptors(page, options = {}) {
 /**
  * Route a response to the correct normalizer based on endpoint
  */
-function normalizeResponse(data, endpoint, seenIds) {
+function normalizeResponse(data, endpoint, seenIds, meta = {}) {
   switch (endpoint) {
     case ENDPOINTS.SEARCH_GENERAL:
-      return normalizeSearchGeneral(data, seenIds);
+      return normalizeSearchGeneral(data, seenIds, meta);
     case ENDPOINTS.SEARCH_ITEM:
-      return normalizeSearchItem(data, seenIds);
+      return normalizeSearchItem(data, seenIds, meta);
     case ENDPOINTS.CHALLENGE_ITEM:
-      return normalizeChallengeItem(data, seenIds);
+      return normalizeChallengeItem(data, seenIds, meta);
     case ENDPOINTS.POST_ITEM_LIST:
-      return normalizeSearchItem(data, seenIds); // Same structure as search
+      return normalizeSearchItem(data, seenIds, meta); // Same structure as search
     case ENDPOINTS.COMMENT_LIST:
       return normalizeCommentList(data, seenIds);
     default:
