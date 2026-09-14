@@ -14,11 +14,26 @@ An Apify actor that scrapes TikTok data using session cookies and network interc
 
 ## Input
 
+Two input styles are supported side by side:
+
+- **clockworks/tiktok-scraper-compatible** fields (`profiles`, `searchQueries`,
+  `hashtags`, `resultsPerPage`, `proxyCountryCode`, `downloadSubtitlesOptions`)
+  — for drop-in use as a replacement actor behind `red-pharmatiq-api`, which
+  sends exactly this shape unchanged. Non-empty `hashtags`/`searchQueries`
+  entries are run as **real keyword search** (not hashtag/challenge OR-match)
+  — that's the whole point of using this actor instead of clockworks.
+- **This actor's own legacy fields** (`mode` + `queries`) — used only when
+  none of `profiles`/`searchQueries`/`hashtags` are set.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mode` | string | `search` | Scraping mode: `search`, `hashtag`, or `profile` |
-| `queries` | array | `[]` | List of search queries, hashtags (#), or usernames (@) |
-| `maxItems` | integer | `200` | Maximum items per query |
+| `mode` | string | `search` | Legacy. Scraping mode: `search`, `hashtag`, or `profile` |
+| `queries` | array | `[]` | Legacy. Used with `mode` when profiles/searchQueries/hashtags are all empty |
+| `profiles` | array | `[]` | clockworks-compatible. Usernames to scrape as profile feeds |
+| `searchQueries` | array | `[]` | clockworks-compatible. Keyword search terms |
+| `hashtags` | array | `[]` | clockworks-compatible. Keywords/hashtags — run as real keyword search (leading `#` stripped), not hashtag OR-match |
+| `maxItems` | integer | `200` | Maximum items per query. Falls back to `resultsPerPage` when unset |
+| `resultsPerPage` | integer | `150` | clockworks-compatible alias for `maxItems` |
 | `sessionCookies` | string | `""` | Session cookies (raw header, JSON, or cookies.txt) |
 | `cookiePool` | array | `[]` | Multiple cookie sets for rotation |
 | `sortBy` | string | `relevance` | Sort order: `relevance` or `latest` |
@@ -28,7 +43,9 @@ An Apify actor that scrapes TikTok data using session cookies and network interc
 | `includeComments` | boolean | `false` | Whether to scrape comments |
 | `commentsPerPost` | integer | `20` | Max comments per video |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
-| `outputSchema` | string | `compat` | Output format: `compat`, `native`, or `both` |
+| `outputSchema` | string | `compat` | Output format: `compat`, `native`, `both`, or `clockworks` |
+| `proxyCountryCode` | string | `""` | clockworks-compatible. Proxy exit country code (e.g. `ID`); overrides the tt-target-idc guess |
+| `downloadSubtitlesOptions` | string | `NO_SUBTITLES` | clockworks-compatible. `DOWNLOAD_SUBTITLES` fetches TikTok's native closed captions and re-hosts them in this run's key-value store |
 
 ### Cookie Format
 
@@ -103,6 +120,55 @@ Each item in the dataset includes:
 }
 ```
 
+### `clockworks` Output Schema (drop-in replacement mode)
+
+Set `outputSchema: "clockworks"` to emit the same field names
+`clockworks/tiktok-scraper` produces, so `red-pharmatiq-api` (unmodified) keeps
+working:
+
+```json
+{
+  "id": "7123456789012345678",
+  "text": "Video caption text...",
+  "createTime": 1705315800,
+  "createTimeISO": "2024-01-15T10:30:00.000Z",
+  "webVideoUrl": "https://www.tiktok.com/@username/video/7123456789012345678",
+  "diggCount": 50000,
+  "shareCount": 3000,
+  "playCount": 500000,
+  "collectCount": 1200,
+  "commentCount": 1200,
+  "repostCount": 500,
+  "isAd": false,
+  "hashtags": [{"name": "fyp"}],
+  "authorMeta": {
+    "name": "username",
+    "nickName": "Display Name",
+    "avatar": "https://p16-sign.tiktokcdn.com/...",
+    "profileUrl": "https://www.tiktok.com/@username",
+    "id": 1234567890,
+    "verified": true,
+    "fans": 100000
+  },
+  "videoMeta": {
+    "coverUrl": "https://...",
+    "downloadAddr": "https://...",
+    "subtitleLinks": [
+      {"downloadLink": "https://api.apify.com/v2/key-value-stores/.../records/subtitle_7123.../0", "language": "eng-US"}
+    ]
+  },
+  "textLanguage": "en",
+  "input": "asthinforce"
+}
+```
+
+Some fields (subtitle track field name, cover URLs, `isPinned`/`isSlideshow`,
+`authorMeta.friends`) are mapped from general TikTok API knowledge rather than
+independently re-verified live — see the confidence notes in
+`src/normalize/clockworks.js`. Run once for real and spot-check a few items
+against a past clockworks dataset before pointing production traffic at this
+actor.
+
 ## Usage
 
 ### On Apify Platform
@@ -148,11 +214,13 @@ src/
   intercept.js         # Network response interception + endpoint routing
   paginate.js          # Scroll-based pagination with stall detection
   antibot.js           # Captcha detection, backoff, session rotation
+  subtitles.js         # Native TikTok subtitle fetch + KV store re-hosting
   normalize/
-    shared.js          # Shared video item normalization
+    shared.js          # Shared video item normalization (compat schema)
     searchItem.js      # Search endpoint normalizers
     challengeItem.js   # Hashtag/challenge normalizer
     comment.js         # Comment normalizer
+    clockworks.js      # clockworks/tiktok-scraper-compatible normalizer
 ```
 
 ## How It Works

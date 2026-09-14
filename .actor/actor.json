@@ -2,7 +2,7 @@
   "actorSpecification": 1,
   "name": "tiktok-scraper",
   "title": "TikTok Scraper",
-  "description": "Scrape TikTok search results, hashtags, and profiles using session cookies with network interception. Captures 100+ items per query via scroll pagination.",
+  "description": "Scrape TikTok search results, hashtags, and profiles using session cookies with network interception. Captures 100+ items per query via scroll pagination. Supports a clockworks/tiktok-scraper-compatible input/output mode (profiles/searchQueries/hashtags/resultsPerPage/proxyCountryCode/downloadSubtitlesOptions in, outputSchema:'clockworks' out) for drop-in replacement use.",
   "version": "1.0.0",
   "meta": {
     "template": "project-playwright"

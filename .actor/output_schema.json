@@ -6,7 +6,7 @@
     "results": {
       "type": "string",
       "title": "Scraped posts",
-      "description": "All posts scraped for the given queries. Each dataset item is a single TikTok post with post_id, shortcode, post_url, text, timestamp, user (id, username, full_name, profile_url, is_verified, follower_count), likes, replies, reposts, quotes, reshares, views, images, videos, is_reply, and source. When includeComments is enabled, items may also include a comments array.",
+      "description": "All posts scraped for the given queries. With the default 'compat' outputSchema, each item has post_id, shortcode, post_url, text, timestamp, user (id, username, full_name, profile_url, is_verified, follower_count), likes, replies, reposts, quotes, reshares, views, images, videos, is_reply, and source (plus a comments array when includeComments is enabled). With outputSchema 'clockworks', each item instead matches clockworks/tiktok-scraper's field names (id, text, createTime/createTimeISO, webVideoUrl, diggCount/shareCount/playCount/collectCount/commentCount/repostCount, hashtags, authorMeta, videoMeta, etc.) for drop-in compatibility with red-pharmatiq-api.",
       "template": "{{links.apiDefaultDatasetUrl}}/items"
     },
     "runMetadata": {

@@ -3,7 +3,6 @@
   "description": "Scrapes TikTok videos, profiles, and hashtags using session cookies. Uses network interception to capture data directly from TikTok's API without DOM parsing.",
   "type": "object",
   "schemaVersion": 1,
-  "required": ["queries"],
   "properties": {
     "mode": {
       "title": "Scraping Mode",
@@ -14,20 +13,58 @@
       "editor": "select"
     },
     "queries": {
+      "title": "Search Queries (legacy)",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Legacy field, used together with 'mode' when none of profiles/searchQueries/hashtags below are set. List of search queries, hashtags (with #), or usernames (with @) to scrape.",
+      "default": ["SamsungGalaxyS25Ultra"],
+      "editor": "json"
+    },
+    "profiles": {
+      "title": "Profiles",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "clockworks/tiktok-scraper-compatible field. Usernames (with or without @) to scrape as profile feeds. Non-empty entries are queued as 'profile' jobs regardless of 'mode'.",
+      "default": [],
+      "editor": "json"
+    },
+    "searchQueries": {
       "title": "Search Queries",
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "List of search queries, hashtags (with #), or usernames (with @) to scrape.",
-      "default": ["SamsungGalaxyS25Ultra"],
+      "description": "clockworks/tiktok-scraper-compatible field. Keyword search terms. Non-empty entries are queued as real keyword-search jobs (via a logged-in session), same as this actor's own 'search' mode.",
+      "default": [],
+      "editor": "json"
+    },
+    "hashtags": {
+      "title": "Hashtags / Keywords",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "clockworks/tiktok-scraper-compatible field. Unlike clockworks (which OR-matches these as hashtags via the challenge feed), this actor strips a leading '#' and runs each as a real TikTok keyword search for better precision. Non-empty entries are queued as search jobs.",
+      "default": [],
       "editor": "json"
     },
     "maxItems": {
       "title": "Max Items Per Query",
       "type": "integer",
-      "description": "Maximum number of items to scrape per query. Default is 200.",
-      "default": 200,
+      "description": "Maximum number of items to scrape per query. Falls back to 'resultsPerPage' when unset, then 200.",
+      "minimum": 1,
+      "maximum": 1000,
+      "editor": "number"
+    },
+    "resultsPerPage": {
+      "title": "Results Per Page",
+      "type": "integer",
+      "description": "clockworks/tiktok-scraper-compatible alias for maxItems (used when maxItems is not set).",
+      "default": 150,
       "minimum": 1,
       "maximum": 1000,
       "editor": "number"
@@ -125,9 +162,24 @@
     "outputSchema": {
       "title": "Output Schema",
       "type": "string",
-      "enum": ["compat", "native", "both"],
-      "description": "'compat' matches the Threads-style schema, 'native' is full TikTok data, 'both' includes all fields.",
+      "enum": ["compat", "native", "both", "clockworks"],
+      "description": "'compat' matches the Threads-style schema, 'native' is full TikTok data, 'both' includes all fields, 'clockworks' matches clockworks/tiktok-scraper's field names (drop-in replacement mode for red-pharmatiq-api).",
       "default": "compat",
+      "editor": "select"
+    },
+    "proxyCountryCode": {
+      "title": "Proxy Country Code",
+      "type": "string",
+      "description": "clockworks/tiktok-scraper-compatible field. 2-letter country code for the residential proxy exit node (e.g. 'ID'). Takes priority over the automatic guess based on the cookies' tt-target-idc.",
+      "default": "",
+      "editor": "textfield"
+    },
+    "downloadSubtitlesOptions": {
+      "title": "Download Subtitles",
+      "type": "string",
+      "enum": ["NO_SUBTITLES", "DOWNLOAD_SUBTITLES"],
+      "description": "clockworks/tiktok-scraper-compatible field. 'DOWNLOAD_SUBTITLES' downloads TikTok's own closed-caption tracks (when present) and re-hosts them in this run's key-value store so they can be fetched without a TikTok session. Free — does not run paid speech-to-text for videos without subtitles.",
+      "default": "NO_SUBTITLES",
       "editor": "select"
     },
     "proxyConfiguration": {
