@@ -78,6 +78,25 @@ At minimum, these cookies must be present:
 Additional cookies that improve results:
 - `ttwid`, `msToken`, `tt-target-idc`, `uid_tt`
 
+### Cookies for clockworks-compatible callers (no `sessionCookies` in the payload)
+
+`red-pharmatiq-api`'s payloads are built to match clockworks/tiktok-scraper's
+input shape (`hashtags`/`searchQueries`/`profiles`/`resultsPerPage`/
+`proxyCountryCode`/`downloadSubtitlesOptions`) and never include
+`sessionCookies` or `cookiePool` — clockworks handles its own auth, so the
+backend was never written to send a cookie. This actor needs one, so when
+both are absent from the input it falls back to Actor-level environment
+variables:
+
+- `TIKTOK_SESSION_COOKIES` — same formats as the `sessionCookies` input field
+- `TIKTOK_COOKIE_POOL` — a JSON array string, same shape as `cookiePool`
+
+Set these in **Apify Console → Actor → Settings → Environment variables**,
+marked **Secret** so they're encrypted and hidden from logs/run details. Do
+**not** put a real cookie in `INPUT_SCHEMA.json`'s `default` or in
+`input.json` — either would commit a live session credential to this repo's
+git history.
+
 ## Output Schema
 
 Each item in the dataset includes:

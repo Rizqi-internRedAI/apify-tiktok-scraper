@@ -53,11 +53,40 @@ function buildJobs({ hashtags, searchQueries, profiles, mode, queries }) {
 }
 
 /**
+ * Cookies fall back to actor-level environment variables when the input
+ * omits them entirely - red-pharmatiq-api's payloads (built to match
+ * clockworks/tiktok-scraper's input shape) never carry sessionCookies/
+ * cookiePool, since clockworks handles its own auth. Set these as Secret
+ * env vars on the Actor in Apify Console (Settings -> Environment
+ * variables), never as an INPUT_SCHEMA default - that would commit a live
+ * session credential to this repo's git history.
+ */
+function cookiesFromEnv() {
+  const sessionCookies = process.env.TIKTOK_SESSION_COOKIES || '';
+
+  let cookiePool = [];
+  if (process.env.TIKTOK_COOKIE_POOL) {
+    try {
+      const parsed = JSON.parse(process.env.TIKTOK_COOKIE_POOL);
+      if (Array.isArray(parsed)) cookiePool = parsed;
+    } catch {
+      // Malformed TIKTOK_COOKIE_POOL env var - ignored, falls through to
+      // sessionCookies (or the caller's own input) instead.
+    }
+  }
+
+  return { sessionCookies, cookiePool };
+}
+
+/**
  * Parse and validate input
  */
 async function parseInput(input) {
-  const sessionCookies = input.sessionCookies || '';
-  const cookiePool = input.cookiePool || [];
+  const envCookies = cookiesFromEnv();
+  const sessionCookies = input.sessionCookies || envCookies.sessionCookies;
+  const cookiePool = (input.cookiePool && input.cookiePool.length > 0)
+    ? input.cookiePool
+    : envCookies.cookiePool;
   const sortBy = input.sortBy || 'relevance';
   const publishedWithin = input.publishedWithin || 'all';
   const dateFromMs = parseDateBound(input.dateFrom);
