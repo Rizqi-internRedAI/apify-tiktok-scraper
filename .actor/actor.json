@@ -9,6 +9,10 @@
   },
   "input": "../INPUT_SCHEMA.json",
   "output": "./output_schema.json",
+  "defaultRunOptions": {
+    "timeoutSecs": 1800,
+    "memoryMbytes": 4096
+  },
   "storages": {
     "dataset": {
       "actorSpecification": 1,
