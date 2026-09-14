@@ -95,7 +95,11 @@ async function parseInput(input) {
   const includeComments = input.includeComments || false;
   const commentsPerPost = input.commentsPerPost || 20;
   const downloadMedia = input.downloadMedia || false;
-  const outputSchema = input.outputSchema || 'compat';
+  // 'clockworks' is the default, not 'compat': red-pharmatiq-api's payloads
+  // never set outputSchema (it's not part of clockworks' own input contract),
+  // so the shape it actually gets has to work with no explicit opt-in.
+  // Pass outputSchema:'compat' explicitly for the legacy Threads-style shape.
+  const outputSchema = input.outputSchema || 'clockworks';
 
   // clockworks-compatible fields (red-pharmatiq-api sends these) plus the
   // legacy mode/queries pair for backward-compatible manual runs.

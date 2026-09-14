@@ -43,7 +43,7 @@ Two input styles are supported side by side:
 | `includeComments` | boolean | `false` | Whether to scrape comments |
 | `commentsPerPost` | integer | `20` | Max comments per video |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
-| `outputSchema` | string | `compat` | Output format: `compat`, `native`, `both`, or `clockworks` |
+| `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, or `both` |
 | `proxyCountryCode` | string | `""` | clockworks-compatible. Proxy exit country code (e.g. `ID`); overrides the tt-target-idc guess |
 | `downloadSubtitlesOptions` | string | `NO_SUBTITLES` | clockworks-compatible. `DOWNLOAD_SUBTITLES` fetches TikTok's native closed captions and re-hosts them in this run's key-value store |
 
@@ -139,11 +139,15 @@ Each item in the dataset includes:
 }
 ```
 
-### `clockworks` Output Schema (drop-in replacement mode)
+### `clockworks` Output Schema (drop-in replacement mode, default)
 
-Set `outputSchema: "clockworks"` to emit the same field names
-`clockworks/tiktok-scraper` produces, so `red-pharmatiq-api` (unmodified) keeps
-working:
+This is the default output — no input field needs to be set. It emits the
+same field names `clockworks/tiktok-scraper` produces (including the post
+thumbnail at `videoMeta.coverUrl` and the poster's profile photo at
+`authorMeta.avatar`), so `red-pharmatiq-api` (unmodified) keeps working. It's
+the default specifically because `red-pharmatiq-api`'s payloads never set
+`outputSchema` — pass `outputSchema: "compat"` explicitly if you want the
+legacy Threads-style shape instead:
 
 ```json
 {

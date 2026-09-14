@@ -162,9 +162,9 @@
     "outputSchema": {
       "title": "Output Schema",
       "type": "string",
-      "enum": ["compat", "native", "both", "clockworks"],
-      "description": "'compat' matches the Threads-style schema, 'native' is full TikTok data, 'both' includes all fields, 'clockworks' matches clockworks/tiktok-scraper's field names (drop-in replacement mode for red-pharmatiq-api).",
-      "default": "compat",
+      "enum": ["clockworks", "compat", "native", "both"],
+      "description": "'clockworks' matches clockworks/tiktok-scraper's field names (default - red-pharmatiq-api's payloads never set this field, so it must work with no explicit opt-in). 'compat' matches the legacy Threads-style schema, 'native' is full TikTok data, 'both' includes all fields.",
+      "default": "clockworks",
       "editor": "select"
     },
     "proxyCountryCode": {
