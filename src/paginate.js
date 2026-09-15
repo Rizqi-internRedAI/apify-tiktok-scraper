@@ -21,12 +21,33 @@ export async function setupPagination(page, options = {}) {
     onScroll = () => {},
     onComplete = () => {},
     onStall = () => {},
+    // Optional: () => number - the caller's own real captured/deduped item
+    // count (e.g. results.length in main.js), used instead of the DOM link
+    // count below. The DOM count is only a rough proxy for what's actually
+    // been intercepted off the network - TikTok's search API can return far
+    // more items per response than are rendered/countable in the DOM at any
+    // given instant, so relying on it alone let pagination keep scrolling
+    // (or stop late) independently of how many items were truly captured.
+    getCount = null,
   } = options;
 
   let scrollCount = 0;
   let emptyScrolls = 0;
   let lastItemCount = 0;
   let noNewDataCount = 0;
+
+  // A caller-supplied getCount may already be at/above target before the
+  // first scroll (e.g. the initial page load's own API response already
+  // returned enough items) - check before scrolling at all so we don't
+  // scroll (and keep intercepting more than requested) unnecessarily.
+  if (getCount) {
+    const initialCount = await getCount();
+    if (initialCount >= targetCount) {
+      onComplete({ reason: 'target_reached', scrollCount, totalItems: initialCount });
+      return { scrollCount, totalItems: initialCount, reason: 'target_reached' };
+    }
+    lastItemCount = initialCount;
+  }
 
   while (scrollCount < maxScrolls) {
     // Perform scroll
@@ -37,7 +58,7 @@ export async function setupPagination(page, options = {}) {
     await waitForResponse(page, scrollDelay);
 
     // Check if new items were loaded
-    const newCount = await getItemCount(page);
+    const newCount = getCount ? await getCount() : await getItemCount(page);
     const itemsGained = newCount - lastItemCount;
 
     onScroll({

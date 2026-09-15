@@ -418,6 +418,11 @@ async function scrapeQuery(page, context, job, config, kvStore) {
         skippedByDate += 1;
         return;
       }
+      // Hard cap at maxItems/resultsPerPage - a single TikTok API response
+      // (even the very first one, before any scrolling) commonly returns far
+      // more items than requested, and nothing else here trims the result
+      // set down to what was asked for.
+      if (results.length >= config.maxItems) return;
       results.push(item);
 
       if (config.downloadSubtitles) {
@@ -482,8 +487,9 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     targetCount: config.maxItems,
     stallLimit: 3,
     scrollDelay: 2500,
+    getCount: () => results.length,
     onScroll: (info) => {
-      log.info(`Scroll ${info.scrollCount}: captured=${results.length}, DOM=${info.currentCount} (${info.itemsGained} new)`);
+      log.info(`Scroll ${info.scrollCount}: captured=${info.currentCount} (${info.itemsGained} new)`);
     },
     onComplete: (result) => {
       log.info(`Pagination complete: ${result.reason}, captured=${results.length} items`);
