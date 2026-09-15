@@ -55,7 +55,7 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `commentsPerPost` | integer | *(unset, falls back to 20)* | Max comments per video, only relevant when `includeComments` is on — not currently used by `red-pharmatiq-api` |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
 | `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, or `both` |
-| `proxyCountryCode` | string | `""` | clockworks-compatible. Proxy exit country code (e.g. `ID`); overrides the tt-target-idc guess |
+| `proxyCountryCode` | string | `""` | The only proxy field this actor uses (e.g. `ID`) — overrides the tt-target-idc guess. Always uses the RESIDENTIAL proxy group internally |
 | `downloadSubtitlesOptions` | string | `NO_SUBTITLES` | clockworks-compatible. `DOWNLOAD_SUBTITLES` fetches TikTok's native closed captions and re-hosts them in this run's key-value store |
 
 ### Cookie Format

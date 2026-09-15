@@ -134,7 +134,7 @@
     "proxyCountryCode": {
       "title": "Proxy Country Code",
       "type": "string",
-      "description": "clockworks/tiktok-scraper-compatible field. 2-letter country code for the residential proxy exit node (e.g. 'ID'). Takes priority over the automatic guess based on the cookies' tt-target-idc.",
+      "description": "The only proxy-region field this actor reads (matches what red-pharmatiq-api sends, e.g. 'ID'). Residential proxy group is always used internally - there's no separate proxy group/type picker. Falls back to a guess based on the cookies' tt-target-idc when left empty.",
       "default": "",
       "editor": "textfield"
     },
@@ -145,16 +145,6 @@
       "description": "clockworks/tiktok-scraper-compatible field. 'DOWNLOAD_SUBTITLES' downloads TikTok's own closed-caption tracks (when present) and re-hosts them in this run's key-value store so they can be fetched without a TikTok session. Free — does not run paid speech-to-text for videos without subtitles.",
       "default": "NO_SUBTITLES",
       "editor": "select"
-    },
-    "proxyConfiguration": {
-      "title": "Proxy Configuration",
-      "type": "object",
-      "description": "Proxy configuration for the actor.",
-      "default": {
-        "useApifyProxy": true,
-        "groups": ["RESIDENTIAL"]
-      },
-      "editor": "proxy"
     }
   }
 }
