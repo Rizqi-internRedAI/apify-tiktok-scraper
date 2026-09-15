@@ -1,14 +1,14 @@
 {
-  "mode": "search",
-  "queries": ["Samsung S26 FE"],
-  "maxItems": 100,
+  "hashtags": ["Samsung S26 FE"],
+  "resultsPerPage": 100,
+  "proxyCountryCode": "ID",
+  "downloadSubtitlesOptions": "NO_SUBTITLES",
   "sessionCookies": "sessionid=YOUR_SESSIONID; sessionid_ss=YOUR_SESSIONID; sid_tt=YOUR_SESSIONID; sid_guard=YOUR_SID_GUARD",
   "sortBy": "relevance",
   "publishedWithin": "all",
   "dateFrom": "",
   "dateTo": "",
   "includeComments": false,
-  "commentsPerPost": 20,
   "downloadMedia": false,
-  "outputSchema": "compat"
+  "outputSchema": "clockworks"
 }

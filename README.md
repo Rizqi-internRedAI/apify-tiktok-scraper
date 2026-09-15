@@ -14,26 +14,36 @@ An Apify actor that scrapes TikTok data using session cookies and network interc
 
 ## Input
 
-Two input styles are supported side by side:
+The Console form only shows the two fields that actually drive what gets
+scraped — everything else is either config (cookies, proxy, output shape) or
+a filter:
 
-- **clockworks/tiktok-scraper-compatible** fields (`profiles`, `searchQueries`,
-  `hashtags`, `resultsPerPage`, `proxyCountryCode`, `downloadSubtitlesOptions`)
-  — for drop-in use as a replacement actor behind `red-pharmatiq-api`, which
-  sends exactly this shape unchanged. Non-empty `hashtags`/`searchQueries`
-  entries are run as **real keyword search** (not hashtag/challenge OR-match)
-  — that's the whole point of using this actor instead of clockworks.
-- **This actor's own legacy fields** (`mode` + `queries`) — used only when
-  none of `profiles`/`searchQueries`/`hashtags` are set.
+- **`hashtags`** — the field `red-pharmatiq-api` actually sends brand
+  keywords in. Runs each as a **real TikTok keyword search** (leading `#`
+  stripped) rather than clockworks' hashtag/challenge OR-match — that's the
+  whole point of using this actor instead of clockworks.
+- **`profiles`** — usernames to scrape as profile feeds. Used by
+  `red-pharmatiq-api`'s `POST /api/scrape/tiktok/profile`.
+
+Both are queued together (not either/or) when both are non-empty.
+
+<details>
+<summary>Legacy/advanced fields (hidden from the Console form, still accepted if sent programmatically)</summary>
+
+`mode` + `queries` (this actor's original fields, used only when
+`profiles`/`hashtags`/`searchQueries` are all empty), `searchQueries` (same as
+`hashtags` but without the `#` stripped — `red-pharmatiq-api` doesn't use
+this one), and `maxItems` (alias for `resultsPerPage`, same effect). Left out
+of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
+`src/main.js` still reads them if present.
+
+</details>
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mode` | string | `search` | Legacy. Scraping mode: `search`, `hashtag`, or `profile` |
-| `queries` | array | `[]` | Legacy. Used with `mode` when profiles/searchQueries/hashtags are all empty |
-| `profiles` | array | `[]` | clockworks-compatible. Usernames to scrape as profile feeds |
-| `searchQueries` | array | `[]` | clockworks-compatible. Keyword search terms |
-| `hashtags` | array | `[]` | clockworks-compatible. Keywords/hashtags — run as real keyword search (leading `#` stripped), not hashtag OR-match |
-| `maxItems` | integer | `200` | Maximum items per query. Falls back to `resultsPerPage` when unset |
-| `resultsPerPage` | integer | `150` | clockworks-compatible alias for `maxItems` |
+| `profiles` | array | `[]` | Usernames to scrape as profile feeds |
+| `hashtags` | array | `[]` | Keywords — run as real keyword search (leading `#` stripped), not hashtag OR-match. What `red-pharmatiq-api` sends |
+| `resultsPerPage` | integer | `150` | Max items scraped per `hashtags`/`profiles` entry |
 | `sessionCookies` | string | `""` | Session cookies (raw header, JSON, or cookies.txt) |
 | `cookiePool` | array | `[]` | Multiple cookie sets for rotation |
 | `sortBy` | string | `relevance` | Sort order: `relevance` or `latest` |
@@ -201,9 +211,8 @@ actor.
 3. Configure input:
    ```json
    {
-     "mode": "search",
-     "queries": ["SamsungGalaxyS25Ultra"],
-     "maxItems": 100,
+     "hashtags": ["SamsungGalaxyS25Ultra"],
+     "resultsPerPage": 100,
      "sessionCookies": "sessionid=...; sessionid_ss=...; sid_tt=...; sid_guard=..."
    }
    ```
@@ -215,7 +224,7 @@ actor.
 npm install
 
 # Run with input
-npm start -- --input '{"queries":["fyp"],"sessionCookies":"..."}'
+npm start -- --input '{"hashtags":["fyp"],"sessionCookies":"..."}'
 ```
 
 ### With Apify CLI

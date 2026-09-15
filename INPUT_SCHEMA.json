@@ -4,41 +4,13 @@
   "type": "object",
   "schemaVersion": 1,
   "properties": {
-    "mode": {
-      "title": "Scraping Mode",
-      "type": "string",
-      "enum": ["search", "hashtag", "profile"],
-      "description": "The type of scraping to perform. 'search' for keyword search, 'hashtag' for hashtag feeds, 'profile' for user profile feeds.",
-      "default": "search",
-      "editor": "select"
-    },
-    "queries": {
-      "title": "Search Queries (legacy)",
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Legacy field, used together with 'mode' when none of profiles/searchQueries/hashtags below are set. List of search queries, hashtags (with #), or usernames (with @) to scrape.",
-      "default": ["SamsungGalaxyS25Ultra"],
-      "editor": "json"
-    },
     "profiles": {
       "title": "Profiles",
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "clockworks/tiktok-scraper-compatible field. Usernames (with or without @) to scrape as profile feeds. Non-empty entries are queued as 'profile' jobs regardless of 'mode'.",
-      "default": [],
-      "editor": "json"
-    },
-    "searchQueries": {
-      "title": "Search Queries",
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "clockworks/tiktok-scraper-compatible field. Keyword search terms. Non-empty entries are queued as real keyword-search jobs (via a logged-in session), same as this actor's own 'search' mode.",
+      "description": "Usernames (with or without @) to scrape as profile feeds. Non-empty entries are queued as profile-feed jobs. Used by red-pharmatiq-api's POST /api/scrape/tiktok/profile.",
       "default": [],
       "editor": "json"
     },
@@ -48,17 +20,9 @@
       "items": {
         "type": "string"
       },
-      "description": "clockworks/tiktok-scraper-compatible field. Unlike clockworks (which OR-matches these as hashtags via the challenge feed), this actor strips a leading '#' and runs each as a real TikTok keyword search for better precision. Non-empty entries are queued as search jobs.",
+      "description": "The field red-pharmatiq-api actually sends brand keywords in. Unlike clockworks/tiktok-scraper (which OR-matches these as hashtags via the challenge feed), this actor strips a leading '#' and runs each as a real TikTok keyword search for better precision.",
       "default": [],
       "editor": "json"
-    },
-    "maxItems": {
-      "title": "Max Items Per Query",
-      "type": "integer",
-      "description": "Maximum number of items to scrape per query. Falls back to 'resultsPerPage' when unset, then 200.",
-      "minimum": 1,
-      "maximum": 1000,
-      "editor": "number"
     },
     "resultsPerPage": {
       "title": "Results Per Page",
