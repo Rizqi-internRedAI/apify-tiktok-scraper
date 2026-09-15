@@ -95,9 +95,10 @@
     "language": {
       "title": "Result Language",
       "type": "string",
-      "enum": ["id", "en", "ms", "th", "vi", "ja", "ko", "es", "pt"],
-      "description": "ISO language code used to scope search results (sets the lang URL parameter and the browser locale). Default is 'id' (Indonesian).",
-      "default": "id",
+      "enum": ["", "id", "en", "ms", "th", "vi", "ja", "ko", "es", "pt"],
+      "enumTitles": ["(none - don't scope by language)", "Indonesian", "English", "Malay", "Thai", "Vietnamese", "Japanese", "Korean", "Spanish", "Portuguese"],
+      "description": "ISO language code used to scope search results (sets the lang URL parameter and the browser locale). Left empty by default - red-pharmatiq-api's own ingestion pipeline already filters to id/en, so this doesn't need to narrow the scrape itself.",
+      "default": "",
       "editor": "select"
     },
     "includeComments": {

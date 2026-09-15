@@ -50,6 +50,7 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `publishedWithin` | string | `all` | Server-side time filter: `all`, `1d`, `7d`, `30d`, `90d`, `180d` |
 | `dateFrom` | string | `""` | Keep posts published on/after this date (`YYYY-MM-DD` or ISO datetime). Client-side, all modes |
 | `dateTo` | string | `""` | Keep posts published on/before this date (inclusive). Client-side, all modes |
+| `language` | string | `""` | ISO language code to scope search results. Empty by default — `red-pharmatiq-api`'s ingestion pipeline already filters to id/en downstream, so the scrape itself doesn't need to narrow by language |
 | `includeComments` | boolean | `false` | Whether to scrape comments |
 | `commentsPerPost` | integer | `20` | Max comments per video |
 | `downloadMedia` | boolean | `false` | Download media to KV store |

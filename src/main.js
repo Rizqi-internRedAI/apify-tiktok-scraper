@@ -91,7 +91,11 @@ async function parseInput(input) {
   const publishedWithin = input.publishedWithin || 'all';
   const dateFromMs = parseDateBound(input.dateFrom);
   const dateToMs = parseDateBound(input.dateTo, { endOfDay: true });
-  const language = input.language || 'id';
+  // No forced default - red-pharmatiq-api's ingestion pipeline already
+  // filters to id/en downstream (domain/language_filter.py), so scoping the
+  // scrape itself to one language would only narrow results without needing
+  // to.
+  const language = input.language || '';
   const includeComments = input.includeComments || false;
   const commentsPerPost = input.commentsPerPost || 20;
   const downloadMedia = input.downloadMedia || false;
@@ -170,14 +174,14 @@ async function parseInput(input) {
 /**
  * Build the TikTok URL based on mode and query
  */
-function buildUrl(mode, query, sortBy, publishedWithin, language = 'id') {
+function buildUrl(mode, query, sortBy, publishedWithin, language = '') {
   const params = new URLSearchParams();
 
   switch (mode) {
     case 'search':
       // TikTok search uses 'q' parameter
       params.set('q', query);
-      params.set('lang', language);
+      if (language) params.set('lang', language);
       if (sortBy === 'latest') {
         params.set('sort_type', '1');
       }
@@ -198,7 +202,7 @@ function buildUrl(mode, query, sortBy, publishedWithin, language = 'id') {
 
     default:
       params.set('q', query);
-      params.set('lang', language);
+      if (language) params.set('lang', language);
       return `https://www.tiktok.com/search?${params.toString()}`;
   }
 }
