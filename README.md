@@ -52,7 +52,7 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `dateTo` | string | `""` | Keep posts published on/before this date (inclusive). Client-side, all modes |
 | `language` | string | `""` | ISO language code to scope search results. Empty by default — `red-pharmatiq-api`'s ingestion pipeline already filters to id/en downstream, so the scrape itself doesn't need to narrow by language |
 | `includeComments` | boolean | `false` | Whether to scrape comments |
-| `commentsPerPost` | integer | `20` | Max comments per video |
+| `commentsPerPost` | integer | *(unset, falls back to 20)* | Max comments per video, only relevant when `includeComments` is on — not currently used by `red-pharmatiq-api` |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
 | `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, or `both` |
 | `proxyCountryCode` | string | `""` | clockworks-compatible. Proxy exit country code (e.g. `ID`); overrides the tt-target-idc guess |
