@@ -11,7 +11,7 @@ import { PlaywrightCrawler, Configuration } from 'crawlee';
 import { readFileSync } from 'fs';
 import { normalizeCookies, validateCookies, getCookieHash, getTargetIdc } from './cookies.js';
 import { setupInterceptors, CaptchaError } from './intercept.js';
-import { setupPagination } from './paginate.js';
+import { setupPagination, waitForCount } from './paginate.js';
 import { SessionManager, detectCaptcha, detectLoggedOut } from './antibot.js';
 import { extractSubtitleInfos, uploadSubtitles } from './subtitles.js';
 
@@ -28,19 +28,21 @@ const DEFAULT_MAX_ITEMS = 200;
 
 /**
  * Build the list of scrape jobs ({ mode, query }) from every supported input
- * shape. Priority order when several are provided: hashtags, searchQueries,
- * profiles (all clockworks-compatible fields, mapped to REAL keyword search
- * — not hashtag/challenge browsing — since that's the whole point of this
- * actor over clockworks' OR-matched hashtag search), falling back to the
- * legacy mode+queries pair only when none of those three are present.
+ * shape. hashtags/searchQueries/profiles/postUrls are all unioned together
+ * (not either/or) when more than one is non-empty; hashtags/searchQueries
+ * map to REAL keyword search — not hashtag/challenge browsing — since
+ * that's the whole point of this actor over clockworks' OR-matched hashtag
+ * search. The legacy mode+queries pair is only used when all four of those
+ * are empty.
  */
-function buildJobs({ hashtags, searchQueries, profiles, mode, queries }) {
+function buildJobs({ hashtags, searchQueries, profiles, postUrls, mode, queries }) {
   const nonBlank = (arr) => (arr || []).map((s) => String(s ?? '').trim()).filter(Boolean);
 
   const jobs = [
     ...nonBlank(hashtags).map((h) => ({ mode: 'search', query: h.replace(/^#/, '') })),
     ...nonBlank(searchQueries).map((q) => ({ mode: 'search', query: q })),
     ...nonBlank(profiles).map((p) => ({ mode: 'profile', query: p.replace(/^@/, '') })),
+    ...nonBlank(postUrls).map((url) => ({ mode: 'post', query: url })),
   ];
 
   if (jobs.length === 0) {
@@ -111,6 +113,7 @@ async function parseInput(input) {
     hashtags: input.hashtags,
     searchQueries: input.searchQueries,
     profiles: input.profiles,
+    postUrls: input.postUrls,
     mode: input.mode,
     queries: input.queries,
   });
@@ -126,7 +129,7 @@ async function parseInput(input) {
 
   if (!jobs.length) {
     throw new Error(
-      'At least one of hashtags, searchQueries, profiles, or (mode + queries) is required'
+      'At least one of hashtags, searchQueries, profiles, postUrls, or (mode + queries) is required'
     );
   }
 
@@ -199,6 +202,10 @@ function buildUrl(mode, query, sortBy, publishedWithin, language = '') {
       const username = query.replace(/^@/, '');
       return `https://www.tiktok.com/@${username}`;
     }
+
+    case 'post':
+      // query is already a full TikTok video URL - nothing to construct.
+      return query;
 
     default:
       params.set('q', query);
@@ -406,6 +413,17 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   const url = buildUrl(mode, query, config.sortBy, config.publishedWithin, config.language);
   log.info(`Navigating to: ${url}`);
 
+  // Diagnostic only for 'post' mode: if /api/item_detail/ turns out to be
+  // the wrong endpoint name (unverified live - see normalize/itemDetail.js),
+  // this lets us log what TikTok actually called so it's fast to fix.
+  const seenApiUrls = [];
+  if (mode === 'post') {
+    page.on('response', (res) => {
+      const u = res.url();
+      if (u.includes('/api/')) seenApiUrls.push(u);
+    });
+  }
+
   // Setup interceptor BEFORE navigation - captures initial search API response
   setupInterceptors(page, {
     endpoints: [
@@ -414,6 +432,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       '/api/challenge/item_list/',
       '/api/post/item_list/',
       '/api/comment/list/',
+      '/api/item_detail/',
     ],
     dedupSet,
     meta: { inputValue: query },
@@ -485,20 +504,35 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   log.info(`Results after initial load: ${results.length}`);
 
-  // Scroll-based pagination: TikTok's own JS loads more pages as we scroll,
-  // and the interceptor captures each new API response
-  await setupPagination(page, {
-    targetCount: config.maxItems,
-    stallLimit: 3,
-    scrollDelay: 2500,
-    getCount: () => results.length,
-    onScroll: (info) => {
-      log.info(`Scroll ${info.scrollCount}: captured=${info.currentCount} (${info.itemsGained} new)`);
-    },
-    onComplete: (result) => {
-      log.info(`Pagination complete: ${result.reason}, captured=${results.length} items`);
-    },
-  });
+  if (mode === 'post') {
+    // A video's own detail page has exactly one item - nothing to scroll
+    // for, just wait for the async XHR to land.
+    const result = await waitForCount({ getCount: () => results.length, targetCount: 1, timeout: 20000 });
+    log.info(`Post detail wait complete: ${result.reason}, captured=${results.length} items`);
+
+    if (results.length === 0) {
+      log.warning(
+        `No item captured for post URL "${query}" - /api/item_detail/ may not be the ` +
+        `right endpoint name (see normalize/itemDetail.js). API calls seen during this ` +
+        `page load: ${seenApiUrls.length ? seenApiUrls.join(', ') : '(none matched /api/)'}`
+      );
+    }
+  } else {
+    // Scroll-based pagination: TikTok's own JS loads more pages as we scroll,
+    // and the interceptor captures each new API response
+    await setupPagination(page, {
+      targetCount: config.maxItems,
+      stallLimit: 3,
+      scrollDelay: 2500,
+      getCount: () => results.length,
+      onScroll: (info) => {
+        log.info(`Scroll ${info.scrollCount}: captured=${info.currentCount} (${info.itemsGained} new)`);
+      },
+      onComplete: (result) => {
+        log.info(`Pagination complete: ${result.reason}, captured=${results.length} items`);
+      },
+    });
+  }
 
   log.info(`Scraped ${results.length} items for ${mode} job: "${query}"` +
     (skippedByDate > 0 ? ` (skipped ${skippedByDate} outside date range)` : ''));
@@ -554,8 +588,15 @@ Actor.main(async () => {
 
   // Parse and validate input
   const config = await parseInput(input);
+  // A bulk 'post' run can carry thousands of jobs - list them individually
+  // only for small runs, otherwise just log the count per mode.
+  const jobsSummary = config.jobs.length <= 20
+    ? config.jobs.map((j) => `${j.mode}:${j.query}`).join(', ')
+    : Object.entries(
+        config.jobs.reduce((counts, j) => ({ ...counts, [j.mode]: (counts[j.mode] || 0) + 1 }), {})
+      ).map(([m, count]) => `${count} ${m} job(s)`).join(', ');
   log.info(
-    `Jobs: ${config.jobs.map((j) => `${j.mode}:${j.query}`).join(', ')}, Max Items: ${config.maxItems}` +
+    `Jobs: ${jobsSummary}, Max Items: ${config.maxItems}` +
       (config.downloadSubtitles ? ', subtitles: on' : '')
   );
 
@@ -584,6 +625,14 @@ Actor.main(async () => {
   const crawlerOptions = {
     maxRequestRetries: 3,
     requestHandlerTimeoutSecs: 300,
+    // Modest concurrency ceiling - without this Crawlee's autoscaler tends to
+    // sit near 1 on typical actor memory allocations, which is fine for a
+    // handful of keyword jobs but far too slow for bulk 'post' mode (each
+    // post URL is its own job). 5 is a deliberate middle ground: enough
+    // throughput for large postUrls batches without hammering TikTok with
+    // too many concurrent requests from the same session/account.
+    minConcurrency: 1,
+    maxConcurrency: 5,
     launchContext: {
       launchOptions: {
         headless: true,
@@ -735,7 +784,10 @@ Actor.main(async () => {
   // Output metadata
   await Actor.setValue('OUTPUT_METADATA', {
     scraped_at: new Date().toISOString(),
-    jobs: config.jobs,
+    // Full job list only for small runs - a bulk 'post' run can carry
+    // thousands of jobs, which doesn't belong in a small metadata record.
+    jobs: config.jobs.length <= 20 ? config.jobs : undefined,
+    job_count: config.jobs.length,
     total_items: stats?.itemCount || 0,
   });
 
