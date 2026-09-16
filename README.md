@@ -14,7 +14,7 @@ An Apify actor that scrapes TikTok data using session cookies and network interc
 
 ## Input
 
-The Console form only shows the two fields that actually drive what gets
+The Console form only shows the fields that actually drive what gets
 scraped — everything else is either config (cookies, proxy, output shape) or
 a filter:
 
@@ -24,8 +24,12 @@ a filter:
   whole point of using this actor instead of clockworks.
 - **`profiles`** — usernames to scrape as profile feeds. Used by
   `red-pharmatiq-api`'s `POST /api/scrape/tiktok/profile`.
+- **`postUrls`** — direct TikTok post URLs, scraped one-by-one (no
+  search/scroll) to refresh a specific post's current metrics. See
+  [Scraping by post URL](#scraping-by-post-url-bulk-metric-refresh) below.
 
-Both are queued together (not either/or) when both are non-empty.
+All three are queued together (not either/or) when more than one is
+non-empty.
 
 <details>
 <summary>Legacy/advanced fields (hidden from the Console form, still accepted if sent programmatically)</summary>
@@ -43,7 +47,8 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 |-------|------|---------|-------------|
 | `profiles` | array | `[]` | Usernames to scrape as profile feeds |
 | `hashtags` | array | `[]` | Keywords — run as real keyword search (leading `#` stripped), not hashtag OR-match. What `red-pharmatiq-api` sends |
-| `resultsPerPage` | integer | `150` | Max items scraped per `hashtags`/`profiles` entry |
+| `postUrls` | array | `[]` | Direct post URLs to re-scrape individually, one job each — see below |
+| `resultsPerPage` | integer | `150` | Max items scraped per `hashtags`/`profiles` entry (not used by `postUrls` — always exactly 1 per URL) |
 | `sessionCookies` | string | `""` | Session cookies (raw header, JSON, or cookies.txt) |
 | `cookiePool` | array | `[]` | Multiple cookie sets for rotation |
 | `sortBy` | string | `relevance` | Sort order: `relevance` or `latest` |
@@ -102,11 +107,43 @@ variables:
 - `TIKTOK_SESSION_COOKIES` — same formats as the `sessionCookies` input field
 - `TIKTOK_COOKIE_POOL` — a JSON array string, same shape as `cookiePool`
 
-Set these in **Apify Console → Actor → Settings → Environment variables**,
-marked **Secret** so they're encrypted and hidden from logs/run details. Do
-**not** put a real cookie in `INPUT_SCHEMA.json`'s `default` or in
-`input.json` — either would commit a live session credential to this repo's
-git history.
+Set these in **Apify Console → Actor → Source tab → Environment variables**
+(a section near the code editor/build button — not under Settings), marked
+**Secret** so they're encrypted and hidden from logs/run details. Do **not**
+put a real cookie in `INPUT_SCHEMA.json`'s `default` or in `input.json` —
+either would commit a live session credential to this repo's git history.
+
+## Scraping by post URL (bulk metric refresh)
+
+`postUrls` scrapes specific TikTok posts directly (`https://www.tiktok.com/@user/video/<id>`)
+instead of searching — one job per URL, no scrolling, exactly one item back
+per URL. Meant for refreshing metrics (views/likes/shares/comments/etc.) of
+posts that already exist somewhere downstream (e.g. the dashboard), keyed by
+the `id`/`webVideoUrl` already in the `clockworks` output.
+
+**Scale.** TikTok has no bulk "get many posts' stats in one call" — each URL
+costs one real page visit (roughly 3-8s). This actor runs a modest
+concurrency ceiling (5 pages at once — see `maxConcurrency` in
+`src/main.js`) so a few thousand URLs are practical in one run, but tens of
+thousands will take hours even so. Two things to manage from the caller side:
+
+- **Batch size**: split very large URL lists across multiple runs rather
+  than one giant run. Smaller batches finish (and fail, if something goes
+  wrong) faster, and a stuck run doesn't hold up the whole backlog.
+- **Run timeout**: this actor's own `defaultRunOptions.timeoutSecs`
+  (`.actor/actor.json`) is 30 minutes, sized for keyword-search jobs — a
+  large `postUrls` batch needs longer. Pass a bigger `timeout` when starting
+  the run via the Apify API (`POST /v2/acts/{actorId}/runs?timeout=<seconds>`),
+  or set it in Console's Run Options for a manual run, rather than raising
+  the shared actor-wide default for every use case.
+
+**Endpoint-name caveat.** Single-post scraping relies on TikTok's own video
+page hydration call, best-known today as `/api/item_detail/`
+(`src/normalize/itemDetail.js`) — not independently re-verified live in this
+session, same as the subtitle field caveat above. If it's wrong, a `postUrls`
+job finishes with 0 items and logs the actual `/api/...` URLs seen during
+that page load, so the real endpoint can be spotted and fixed quickly. Test
+with a couple of known URLs before trusting this at scale.
 
 ## Output Schema
 

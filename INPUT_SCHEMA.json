@@ -24,6 +24,16 @@
       "default": [],
       "editor": "json"
     },
+    "postUrls": {
+      "title": "Post URLs",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Direct TikTok post URLs (e.g. 'https://www.tiktok.com/@user/video/123...') to re-scrape individually - one job per URL, no search/scroll involved. For refreshing metrics (views/likes/shares/etc.) of posts that already exist elsewhere. Each URL costs one page visit (~3-8s), so for large batches (thousands+) split across multiple runs and/or pass a longer 'timeout' when starting the run - see README.",
+      "default": [],
+      "editor": "json"
+    },
     "resultsPerPage": {
       "title": "Results Per Page",
       "type": "integer",
