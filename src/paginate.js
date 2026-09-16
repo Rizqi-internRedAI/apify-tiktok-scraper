@@ -97,6 +97,26 @@ export async function setupPagination(page, options = {}) {
 }
 
 /**
+ * Poll (no scrolling) until getCount() reaches targetCount or timeout
+ * elapses. For single-item pages (a video's own detail page) where there's
+ * nothing to scroll - just an async XHR to wait for.
+ */
+export async function waitForCount({ getCount, targetCount = 1, timeout = 20000, pollInterval = 500 }) {
+  const start = Date.now();
+  let count = await getCount();
+
+  while (count < targetCount && Date.now() - start < timeout) {
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    count = await getCount();
+  }
+
+  return {
+    totalItems: count,
+    reason: count >= targetCount ? 'target_reached' : 'timeout',
+  };
+}
+
+/**
  * Scroll down on the page to trigger infinite scroll
  *
  * Scrolls in small steps (so TikTok's lazy loader sees gradual progress),
