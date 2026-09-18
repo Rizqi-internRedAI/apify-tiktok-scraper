@@ -19,8 +19,15 @@ let loggedMissingOnce = false;
 export function extractSubtitleInfos(item, log = console) {
   const video = item?.video || {};
   const infos = video.subtitleInfos;
-  if (Array.isArray(infos) && infos.length) return infos;
+  if (Array.isArray(infos)) {
+    // Confirmed field name (video.subtitleInfos is a real, present key) -
+    // an empty array here legitimately means this particular video has no
+    // caption track, not a wrong field name. Nothing to warn about.
+    return infos;
+  }
 
+  // Only warn when the field is genuinely absent/not an array - that's the
+  // "field name is wrong" signal, distinct from "this video has none".
   if (!loggedMissingOnce) {
     loggedMissingOnce = true;
     log.warning?.(

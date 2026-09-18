@@ -14,14 +14,25 @@ function pickUrl(list) {
   return null;
 }
 
+// Accepts either this project's Actor.log/logger shape (.warning) or plain
+// console (.warn) - a raw console.warn() call was silently not showing up
+// in the Apify run log the way every other [WARN]-prefixed line here does.
+function warn(log, message) {
+  if (log?.warning) return log.warning(message);
+  if (log?.warn) return log.warn(message);
+  console.warn(message);
+}
+
 let loggedMissingDownloadAddrOnce = false;
 
 /**
  * Normalize one raw TikTok item into the clockworks output shape.
  * `inputValue` is the search query / hashtag / profile that produced this
  * item — stamped onto the `input` field, same as clockworks does.
+ * `log` (optional, threaded through from main.js via the same `meta` object
+ * used for `inputValue`) is used for the diagnostic below.
  */
-export function normalizeClockworksItem(item, { inputValue = null } = {}) {
+export function normalizeClockworksItem(item, { inputValue = null, log = console } = {}) {
   if (!item || !item.id) return null;
 
   const author = item.author || item.authorInfo || {};
@@ -102,10 +113,12 @@ export function normalizeClockworksItem(item, { inputValue = null } = {}) {
 
   if (!downloadAddr && Object.keys(video).length && !loggedMissingDownloadAddrOnce) {
     loggedMissingDownloadAddrOnce = true;
-    console.warn(
-      `[clockworks.js] videoMeta.downloadAddr came up empty for item ${item.id}; ` +
+    warn(
+      log,
+      `videoMeta.downloadAddr came up empty for item ${item.id}; ` +
+      `video.downloadAddr=${JSON.stringify(video.downloadAddr)}, video.playAddr=${JSON.stringify(video.playAddr)}; ` +
       `keys under item.video: [${Object.keys(video).join(', ')}]` +
-      (bitrateVariant ? `; keys under video.bitrateInfo[0]: [${Object.keys(bitrateVariant).join(', ')}]` : '')
+      (bitrateVariant ? `; keys under video.bitrateInfo[0]: [${Object.keys(bitrateVariant).join(', ')}]` : '; video.bitrateInfo is not an array/absent')
     );
   }
 

@@ -436,7 +436,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       '/api/item_detail/',
     ],
     dedupSet,
-    meta: { inputValue: query },
+    meta: { inputValue: query, log },
     onItem: (item) => {
       if (!isWithinDateRange(item, config.dateRange)) {
         skippedByDate += 1;
@@ -512,7 +512,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     // needed. See normalize/itemDetail.js for the extraction details.
     const rawItem = await extractItemFromPage(page);
     if (rawItem) {
-      for (const item of normalizeItemFromPageData(rawItem, dedupSet, { inputValue: query })) {
+      for (const item of normalizeItemFromPageData(rawItem, dedupSet, { inputValue: query, log })) {
         if (!isWithinDateRange(item, config.dateRange)) {
           skippedByDate += 1;
           continue;
