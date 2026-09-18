@@ -649,7 +649,7 @@ Actor.main(async () => {
       },
     },
     preNavigationHooks: [
-      async (crawlingContext) => {
+      async (crawlingContext, gotoOptions) => {
         const { page } = crawlingContext;
         // Override navigator.webdriver to avoid detection
         await page.addInitScript(() => {
@@ -665,6 +665,18 @@ Actor.main(async () => {
               ? Promise.resolve({ state: Notification.permission })
               : originalQuery(parameters);
         });
+
+        // Crawlee does its OWN page.goto(request.url) here, before
+        // requestHandler runs - gotoOptions controls that call. Without this,
+        // it silently defaults to Playwright's waitUntil:'load', which on
+        // TikTok often never fires (persistent video-buffering/beacon
+        // traffic keeps the page "loading" forever from the browser's
+        // perspective) - reliably timing out at 60s on video detail pages in
+        // particular, before scrapeQuery's own (already domcontentloaded)
+        // navigation ever gets a chance to run. See scrapeQuery's own goto
+        // call for the same reasoning.
+        gotoOptions.waitUntil = 'domcontentloaded';
+        gotoOptions.timeout = 30000;
       },
     ],
     async requestHandler({ page, request }) {
