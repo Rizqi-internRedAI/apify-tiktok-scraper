@@ -14,6 +14,7 @@ import { setupInterceptors, CaptchaError } from './intercept.js';
 import { setupPagination, waitForCount } from './paginate.js';
 import { SessionManager, detectCaptcha, detectLoggedOut } from './antibot.js';
 import { extractSubtitleInfos, uploadSubtitles } from './subtitles.js';
+import { extractItemFromPage, normalizeItemFromPageData } from './normalize/itemDetail.js';
 
 // Local development fallback for logging
 const logger = {
@@ -505,16 +506,40 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   log.info(`Results after initial load: ${results.length}`);
 
   if (mode === 'post') {
-    // A video's own detail page has exactly one item - nothing to scroll
-    // for, just wait for the async XHR to land.
-    const result = await waitForCount({ getCount: () => results.length, targetCount: 1, timeout: 20000 });
-    log.info(`Post detail wait complete: ${result.reason}, captured=${results.length} items`);
+    // Primary path (confirmed via a real run's logs on 2026-09-18): the
+    // video detail page is server-side rendered, so the item is already in
+    // the HTML by the time 'domcontentloaded' fires - no network wait
+    // needed. See normalize/itemDetail.js for the extraction details.
+    const rawItem = await extractItemFromPage(page);
+    if (rawItem) {
+      for (const item of normalizeItemFromPageData(rawItem, dedupSet, { inputValue: query })) {
+        if (!isWithinDateRange(item, config.dateRange)) {
+          skippedByDate += 1;
+          continue;
+        }
+        if (results.length >= config.maxItems) break;
+        results.push(item);
+        if (config.downloadSubtitles) {
+          subtitleTasks.push(attachSubtitles(page, item, kvStore, log));
+        }
+      }
+    }
+
+    // Fallback only: give the network-intercept path (registered above,
+    // /api/item_detail/) a brief window in case it does fire in some
+    // scenario this session's one real run didn't cover.
+    if (results.length === 0) {
+      await waitForCount({ getCount: () => results.length, targetCount: 1, timeout: 5000 });
+    }
+
+    log.info(`Post detail extraction complete: captured=${results.length} items`);
 
     if (results.length === 0) {
       log.warning(
-        `No item captured for post URL "${query}" - /api/item_detail/ may not be the ` +
-        `right endpoint name (see normalize/itemDetail.js). API calls seen during this ` +
-        `page load: ${seenApiUrls.length ? seenApiUrls.join(', ') : '(none matched /api/)'}`
+        `No item captured for post URL "${query}" - the embedded SSR state ` +
+        `(__UNIVERSAL_DATA_FOR_REHYDRATION__/SIGI_STATE) and /api/item_detail/ both came up ` +
+        `empty (see normalize/itemDetail.js). API calls seen during this page load: ` +
+        `${seenApiUrls.length ? seenApiUrls.join(', ') : '(none matched /api/)'}`
       );
     }
   } else {
