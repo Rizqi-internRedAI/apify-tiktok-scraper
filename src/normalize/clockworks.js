@@ -14,6 +14,8 @@ function pickUrl(list) {
   return null;
 }
 
+let loggedMissingDownloadAddrOnce = false;
+
 /**
  * Normalize one raw TikTok item into the clockworks output shape.
  * `inputValue` is the search query / hashtag / profile that produced this
@@ -83,10 +85,34 @@ export function normalizeClockworksItem(item, { inputValue = null } = {}) {
   // best-effort: `videoMeta.subtitleLinks` is filled in later by
   // src/subtitles.js when downloadSubtitlesOptions is enabled — left empty
   // here so the field always exists even when subtitle fetching is off.
+  //
+  // downloadAddr note (2026-09-18): a real run confirmed video.cover/
+  // originCover are correct, but video.downloadAddr/video.playAddr came back
+  // empty on every item - TikTok apparently doesn't expose a flat playable
+  // URL on this shape. video.bitrateInfo[].PlayAddr.UrlList is a commonly
+  // seen TikTok pattern for the same data, tried here as a next-best guess;
+  // if that's ALSO wrong, the diagnostic below logs the real keys under
+  // item.video once per run so it's fast to fix for real next time.
+  const bitrateVariant = Array.isArray(video.bitrateInfo) ? video.bitrateInfo[0] : null;
+  const downloadAddr = video.downloadAddr
+    || video.playAddr
+    || pickUrl(bitrateVariant?.PlayAddr?.UrlList)
+    || pickUrl(bitrateVariant?.PlayAddr?.url_list)
+    || null;
+
+  if (!downloadAddr && Object.keys(video).length && !loggedMissingDownloadAddrOnce) {
+    loggedMissingDownloadAddrOnce = true;
+    console.warn(
+      `[clockworks.js] videoMeta.downloadAddr came up empty for item ${item.id}; ` +
+      `keys under item.video: [${Object.keys(video).join(', ')}]` +
+      (bitrateVariant ? `; keys under video.bitrateInfo[0]: [${Object.keys(bitrateVariant).join(', ')}]` : '')
+    );
+  }
+
   const videoMeta = {
     coverUrl: pickUrl(video.cover?.urlList) || video.cover || null,
     originalCoverUrl: pickUrl(video.originCover?.urlList) || video.originCover || null,
-    downloadAddr: video.downloadAddr || video.playAddr || null,
+    downloadAddr,
     subtitleLinks: [],
   };
 
