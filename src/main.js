@@ -513,44 +513,78 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   // analytics beacons keep the network busy forever and goto always times
   // out after 60s (see run log: page.goto Timeout 60000ms exceeded).
   // domcontentloaded + explicit wait for results/captcha is reliable.
-  let navigated = false;
-  let lastGotoError = null;
-  for (let attempt = 1; attempt <= 2 && !navigated; attempt += 1) {
+  //
+  // RENDER RETRY: real runs show TikTok's search SPA occasionally takes
+  // longer than one navigation+wait cycle to actually paint results -
+  // observed correlated with the container's memory/CPU being reported
+  // "critically overloaded" by Crawlee's Snapshotter, and separately as a
+  // spurious captcha/login-wall state that clears up on a fresh load. Both
+  // previously surfaced as a false "0 items" for a query that has real
+  // content (confirmed many times in practice: an identical re-run of the
+  // same query, seconds later, returns real results). Rather than reporting
+  // a false empty result and relying on the CALLER to blindly retry the
+  // whole actor run, retry the render itself up to RENDER_ATTEMPTS times
+  // in-process before giving up - a fresh page.goto (not just re-waiting)
+  // since a full reload is what actually clears the transient bad state.
+  const RENDER_ATTEMPTS = 4;
+  let renderSucceeded = false;
+  for (let renderAttempt = 1; renderAttempt <= RENDER_ATTEMPTS; renderAttempt += 1) {
+    let navigated = false;
+    let lastGotoError = null;
+    for (let attempt = 1; attempt <= 2 && !navigated; attempt += 1) {
+      try {
+        await page.goto(url, {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000,
+        });
+        navigated = true;
+      } catch (err) {
+        lastGotoError = err;
+        log.warning(`Navigation attempt ${attempt}/2 failed: ${err.message.split('\n')[0]}`);
+        if (attempt < 2) await page.waitForTimeout(2000);
+      }
+    }
+    if (!navigated) throw lastGotoError;
+
+    // Give TikTok's SPA a moment to boot, then check what we actually got
+    // (results, captcha wall, or login wall) instead of waiting blindly.
+    await page.waitForTimeout(3000);
     try {
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
-      navigated = true;
+      await page.waitForSelector(
+        'a[href*="/video/"], [data-e2e="search_top-item"], [data-e2e="search_video-item"], #captcha_container, #captcha-verify, [data-e2e="captcha-container"]',
+        { timeout: 25000 }
+      );
+      renderSucceeded = true;
+    } catch {
+      // Selector timeout is non-fatal on its own - pagination/interceptor
+      // may still have captured API responses via network interception
+      // even though the DOM never showed a recognized marker.
+    }
+
+    try {
+      if (await detectCaptcha(page)) {
+        throw new CaptchaError(10000, 'Captcha wall detected after navigation');
+      }
     } catch (err) {
-      lastGotoError = err;
-      log.warning(`Navigation attempt ${attempt}/2 failed: ${err.message.split('\n')[0]}`);
-      if (attempt < 2) await page.waitForTimeout(2000);
+      if (err?.name === 'CaptchaError') throw err;
+      // detectCaptcha itself failed (e.g. page closed) - ignore, continue
     }
-  }
-  if (!navigated) throw lastGotoError;
 
-  // Give TikTok's SPA a moment to boot, then check what we actually got
-  // (results, captcha wall, or login wall) instead of waiting blindly.
-  await page.waitForTimeout(3000);
-  try {
-    await page.waitForSelector(
-      'a[href*="/video/"], [data-e2e="search_top-item"], [data-e2e="search_video-item"], #captcha_container, #captcha-verify, [data-e2e="captcha-container"]',
-      { timeout: 20000 }
-    );
-  } catch {
-    // Selector timeout is non-fatal - pagination/interceptor may still
-    // have captured API responses; log state for diagnostics.
-    log.warning('Timed out waiting for search results/captcha selector; continuing anyway');
-  }
+    // Either the selector resolved, or the interceptor already captured
+    // items from the network response regardless of DOM state - both count
+    // as a real render, no need to burn further attempts.
+    if (renderSucceeded || results.length > 0) break;
 
-  try {
-    if (await detectCaptcha(page)) {
-      throw new CaptchaError(10000, 'Captcha wall detected after navigation');
+    if (renderAttempt < RENDER_ATTEMPTS) {
+      log.warning(
+        `Timed out waiting for search results/captcha selector (render attempt ${renderAttempt}/${RENDER_ATTEMPTS}, 0 items so far) - reloading and retrying`
+      );
+      await page.waitForTimeout(2000);
+    } else {
+      log.warning(
+        `Timed out waiting for search results/captcha selector after ${RENDER_ATTEMPTS} render attempts; continuing with whatever was captured (${results.length} items)`
+      );
     }
-  } catch (err) {
-    if (err?.name === 'CaptchaError') throw err;
-    // detectCaptcha itself failed (e.g. page closed) - ignore, continue
   }
 
   log.info(`Results after initial load: ${results.length}`);
