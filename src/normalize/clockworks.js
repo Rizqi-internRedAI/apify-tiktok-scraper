@@ -165,6 +165,10 @@ export function normalizeClockworksItem(item, { inputValue = null, log = console
     // best-effort: only meaningful for challenge/hashtag-browse results,
     // which this actor's search-mode jobs don't produce.
     searchHashtag: null,
+    // Filled in later by main.js's extractRelatedSearchWords when the
+    // scrapeRelatedSearchWords input option is on (search mode only) -
+    // empty here so the key always exists regardless.
+    relatedSearchWords: [],
     commentsDatasetUrl: null,
     error: null,
   };

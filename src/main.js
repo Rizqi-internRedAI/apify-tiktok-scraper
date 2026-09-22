@@ -122,6 +122,7 @@ async function parseInput(input) {
   const maxItems = input.maxItems || input.resultsPerPage || DEFAULT_MAX_ITEMS;
   const proxyCountryCode = input.proxyCountryCode || null;
   const downloadSubtitles = input.downloadSubtitlesOptions === 'DOWNLOAD_SUBTITLES';
+  const scrapeRelatedSearchWords = input.scrapeRelatedSearchWords || false;
 
   // Validate required fields
   if (!sessionCookies && (!cookiePool || cookiePool.length === 0)) {
@@ -172,6 +173,7 @@ async function parseInput(input) {
     outputSchema,
     proxyCountryCode,
     downloadSubtitles,
+    scrapeRelatedSearchWords,
   };
 }
 
@@ -346,6 +348,54 @@ async function attachSubtitles(page, wrapperItem, kvStore, log) {
   }
 }
 
+let loggedMissingRelatedWordsOnce = false;
+
+/**
+ * Read TikTok's "Others also searched for" related keywords off a search
+ * results page (clockworks' scrapeRelatedSearchWords option). This is
+ * UI-rendered content, not present in any network response this actor
+ * already intercepts, so it's read straight from the DOM - the selectors
+ * below are best-known guesses (matching this file's existing search-result
+ * selectors' data-e2e naming convention), not independently live-verified.
+ * If none match, logs the data-e2e attributes actually present on the page
+ * once per run so it's fast to correct.
+ */
+async function extractRelatedSearchWords(page, log) {
+  const words = await page.evaluate(() => {
+    const selectors = [
+      '[data-e2e="search-common-link"]',
+      '[data-e2e="search-common-list"] a',
+      '[data-e2e="related-search"] a',
+      '[data-e2e="search-common"] a',
+    ];
+    for (const sel of selectors) {
+      const els = document.querySelectorAll(sel);
+      if (els.length) {
+        return Array.from(els)
+          .map((el) => el.textContent?.trim())
+          .filter(Boolean);
+      }
+    }
+    return [];
+  });
+
+  if (!words.length && !loggedMissingRelatedWordsOnce) {
+    loggedMissingRelatedWordsOnce = true;
+    const dataE2eSeen = await page.evaluate(() =>
+      Array.from(new Set(
+        Array.from(document.querySelectorAll('[data-e2e]')).map((el) => el.getAttribute('data-e2e'))
+      )).filter(Boolean).slice(0, 60)
+    );
+    log.warning(
+      'scrapeRelatedSearchWords: no "Others also searched for" chips matched any known ' +
+      `selector (see extractRelatedSearchWords in src/main.js). data-e2e attributes seen ` +
+      `on this page: [${dataE2eSeen.join(', ')}]`
+    );
+  }
+
+  return words;
+}
+
 /**
  * Scrape comments for a specific video
  */
@@ -505,6 +555,12 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   log.info(`Results after initial load: ${results.length}`);
 
+  let relatedSearchWords = [];
+  if (mode === 'search' && config.scrapeRelatedSearchWords) {
+    relatedSearchWords = await extractRelatedSearchWords(page, log);
+    log.info(`Related search words: ${relatedSearchWords.length ? relatedSearchWords.join(', ') : '(none found)'}`);
+  }
+
   if (mode === 'post') {
     // Primary path (confirmed via a real run's logs on 2026-09-18): the
     // video detail page is server-side rendered, so the item is already in
@@ -561,6 +617,15 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   log.info(`Scraped ${results.length} items for ${mode} job: "${query}"` +
     (skippedByDate > 0 ? ` (skipped ${skippedByDate} outside date range)` : ''));
+
+  // clockworks adds the related search words to every video result from
+  // the job that found them - applied here, after collection, so it covers
+  // items gathered during scrolling too, not just the initial load.
+  if (relatedSearchWords.length) {
+    for (const item of results) {
+      if (item.clockworks) item.clockworks.relatedSearchWords = relatedSearchWords;
+    }
+  }
 
   // Wait for any in-flight subtitle downloads/uploads to finish before this
   // job's items are pushed to the dataset.
@@ -622,7 +687,8 @@ Actor.main(async () => {
       ).map(([m, count]) => `${count} ${m} job(s)`).join(', ');
   log.info(
     `Jobs: ${jobsSummary}, Max Items: ${config.maxItems}` +
-      (config.downloadSubtitles ? ', subtitles: on' : '')
+      (config.downloadSubtitles ? ', subtitles: on' : '') +
+      (config.scrapeRelatedSearchWords ? ', related search words: on' : '')
   );
 
   // Calculate session ID for proxy pinning
