@@ -62,6 +62,18 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, or `both` |
 | `proxyCountryCode` | string | `""` | The only proxy field this actor uses (e.g. `ID`) — overrides the tt-target-idc guess. Always uses the RESIDENTIAL proxy group internally |
 | `downloadSubtitlesOptions` | string | `NO_SUBTITLES` | clockworks-compatible. `DOWNLOAD_SUBTITLES` fetches TikTok's native closed captions and re-hosts them in this run's key-value store |
+| `scrapeRelatedSearchWords` | boolean | `false` | clockworks-compatible. Adds TikTok's "Others also searched for" keywords to every result (search mode only) — see caveat below |
+
+**`scrapeRelatedSearchWords` caveat**: unlike every other field in this
+actor, the related-search chips aren't in any network response — they're
+read straight from the search page's DOM (`extractRelatedSearchWords` in
+`src/main.js`), using a handful of best-known-guess selectors that haven't
+been independently live-verified. If they're wrong, the run log gets a
+`scrapeRelatedSearchWords: no "Others also searched for" chips matched...`
+warning listing the actual `data-e2e` attributes present on the page —
+update the selector list in `extractRelatedSearchWords` from that. When it
+works, the words land on each item's `clockworks` output as
+`relatedSearchWords: string[]`.
 
 ### Cookie Format
 

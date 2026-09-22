@@ -155,6 +155,13 @@
       "description": "clockworks/tiktok-scraper-compatible field. 'DOWNLOAD_SUBTITLES' downloads TikTok's own closed-caption tracks (when present) and re-hosts them in this run's key-value store so they can be fetched without a TikTok session. Free — does not run paid speech-to-text for videos without subtitles.",
       "default": "NO_SUBTITLES",
       "editor": "select"
+    },
+    "scrapeRelatedSearchWords": {
+      "title": "Scrape related search words",
+      "type": "boolean",
+      "description": "Tick to include the keywords TikTok shows in the 'Others also searched for' section on the search results page. The words will be added to every video result from that search job (as videoMeta's sibling field relatedSearchWords). Search mode only (hashtags/searchQueries) - has no effect on profiles/postUrls. Read from the page UI (not a network response), so unverified live - if the diagnostic warning shows up in the run log, the selectors in extractRelatedSearchWords (src/main.js) need updating.",
+      "default": false,
+      "editor": "checkbox"
     }
   }
 }
