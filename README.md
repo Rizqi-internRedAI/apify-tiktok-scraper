@@ -319,7 +319,7 @@ src/
 ## Known Limitations
 
 - **Search depth**: ~300-450 items max per query due to TikTok's internal limits
-- **Media URLs**: Video URLs expire in ~2 hours; download during the run if needed
+- **Media URLs**: `videoMeta.downloadAddr`/`coverUrl`/`originalCoverUrl` are signed TikTok CDN links with an `x-expires` query param. Measured from real scrape output (2026-09-18): valid for **~46-48 hours (about 2 days)** from the time of scraping, not the "~2 hours" a much shorter-lived signed-URL pattern would suggest — `red-pharmatiq-api` re-uploads these to its own storage as soon as it processes the webhook (normally within minutes of the run finishing), well inside that window, so this is informational rather than a problem for that flow today
 - **Personalization**: Results are personalized per account (logged-in vs anonymous differ)
 - **Account risk**: Heavy scraping may rate-limit or ban the account; use throwaway accounts
 

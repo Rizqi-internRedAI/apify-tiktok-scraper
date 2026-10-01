@@ -129,7 +129,7 @@
     "downloadMedia": {
       "title": "Download Media",
       "type": "boolean",
-      "description": "Whether to download media files to KV store (video URLs expire in ~2 hours).",
+      "description": "Whether to download media files to KV store (video URLs are signed and expire - measured at ~46-48 hours from scrape time on real output, see README).",
       "default": false,
       "editor": "checkbox"
     },
