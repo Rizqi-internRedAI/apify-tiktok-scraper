@@ -776,6 +776,42 @@ Actor.main(async () => {
     preNavigationHooks: [
       async (crawlingContext, gotoOptions) => {
         const { page } = crawlingContext;
+
+        // Block heavy resources we never need - every field this actor
+        // extracts comes from network-response JSON or embedded
+        // <script type="application/json"> state, never from rendered
+        // images/video/fonts. Never block stylesheet: TikTok's infinite
+        // scroll uses an IntersectionObserver that needs real layout, and
+        // CSS-stripped pages break scroll detection (see plan.md).
+        //
+        // This was part of the actor's original design (plan.md) but was
+        // never actually wired up - confirmed via real run billing data
+        // (2026-10-02) that its absence is the main cost/speed driver for
+        // 'post' mode specifically: a dedicated video-detail page preloads
+        // its own focused video (unlike a search-results grid of
+        // thumbnails) and a full related-videos sidebar, at ~5MB/page vs
+        // ~100-200KB/item for search mode - a ~40-70x per-item cost gap
+        // almost entirely in PROXY_RESIDENTIAL_TRANSFER_GBYTES.
+        if (!page.__resourceBlockingSet) {
+          page.__resourceBlockingSet = true;
+          await page.route('**/*', (route) => {
+            const request = route.request();
+            const resourceType = request.resourceType();
+            if (['image', 'media', 'font'].includes(resourceType)) {
+              return route.abort();
+            }
+            // Belt-and-suspenders: adaptive-streaming video chunks can load
+            // via fetch/xhr rather than resourceType 'media'. Best-known
+            // TikTok video CDN URL pattern, not independently live-verified
+            // - a miss here just means no extra savings, not a regression.
+            const url = request.url();
+            if (/\.mp4(\?|$)/.test(url) || /v\d+[a-z-]*\.tiktokcdn|v\d+-\w+\.tiktok\.com/.test(url)) {
+              return route.abort();
+            }
+            return route.continue();
+          });
+        }
+
         // Override navigator.webdriver to avoid detection
         await page.addInitScript(() => {
           Object.defineProperty(navigator, 'webdriver', {
