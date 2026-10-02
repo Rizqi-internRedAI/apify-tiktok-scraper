@@ -528,6 +528,10 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   // since a full reload is what actually clears the transient bad state.
   const RENDER_ATTEMPTS = 4;
   let renderSucceeded = false;
+  // 'post' mode's render-success check extracts the item directly (see
+  // below) rather than waiting on a DOM selector - cached here so the
+  // mode==='post' block further down can reuse it instead of re-extracting.
+  let postItemFromRetryLoop = null;
   for (let renderAttempt = 1; renderAttempt <= RENDER_ATTEMPTS; renderAttempt += 1) {
     let navigated = false;
     let lastGotoError = null;
@@ -549,16 +553,36 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     // Give TikTok's SPA a moment to boot, then check what we actually got
     // (results, captcha wall, or login wall) instead of waiting blindly.
     await page.waitForTimeout(3000);
-    try {
-      await page.waitForSelector(
-        'a[href*="/video/"], [data-e2e="search_top-item"], [data-e2e="search_video-item"], #captcha_container, #captcha-verify, [data-e2e="captcha-container"]',
-        { timeout: 25000 }
-      );
-      renderSucceeded = true;
-    } catch {
-      // Selector timeout is non-fatal on its own - pagination/interceptor
-      // may still have captured API responses via network interception
-      // even though the DOM never showed a recognized marker.
+
+    if (mode === 'post') {
+      // The search-results selector below (data-e2e="search_top-item" etc.)
+      // never appears on a video detail page - confirmed via a real run's
+      // logs (2026-10-02) that using it here made EVERY post job burn all
+      // RENDER_ATTEMPTS reloads (each one a full page load) before falling
+      // back to the extraction that already worked on attempt 1, a ~4x
+      // bandwidth/time cost for zero benefit. Check the actual success
+      // condition instead: can the item be extracted from the embedded SSR
+      // state yet? (see extractItemFromPage / normalize/itemDetail.js)
+      postItemFromRetryLoop = await extractItemFromPage(page);
+      if (!postItemFromRetryLoop) {
+        // Brief extra settle window for a slow render before giving up on
+        // this attempt - cheaper than the 25s selector timeout below uses.
+        await page.waitForTimeout(2000);
+        postItemFromRetryLoop = await extractItemFromPage(page);
+      }
+      if (postItemFromRetryLoop) renderSucceeded = true;
+    } else {
+      try {
+        await page.waitForSelector(
+          'a[href*="/video/"], [data-e2e="search_top-item"], [data-e2e="search_video-item"], #captcha_container, #captcha-verify, [data-e2e="captcha-container"]',
+          { timeout: 25000 }
+        );
+        renderSucceeded = true;
+      } catch {
+        // Selector timeout is non-fatal on its own - pagination/interceptor
+        // may still have captured API responses via network interception
+        // even though the DOM never showed a recognized marker.
+      }
     }
 
     try {
@@ -570,19 +594,21 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       // detectCaptcha itself failed (e.g. page closed) - ignore, continue
     }
 
-    // Either the selector resolved, or the interceptor already captured
-    // items from the network response regardless of DOM state - both count
-    // as a real render, no need to burn further attempts.
+    // Either the render-success check passed, or the interceptor already
+    // captured items from the network response regardless of DOM state -
+    // both count as a real render, no need to burn further attempts.
     if (renderSucceeded || results.length > 0) break;
 
     if (renderAttempt < RENDER_ATTEMPTS) {
       log.warning(
-        `Timed out waiting for search results/captcha selector (render attempt ${renderAttempt}/${RENDER_ATTEMPTS}, 0 items so far) - reloading and retrying`
+        `Timed out waiting for ${mode === 'post' ? 'post item extraction' : 'search results/captcha selector'} ` +
+        `(render attempt ${renderAttempt}/${RENDER_ATTEMPTS}, 0 items so far) - reloading and retrying`
       );
       await page.waitForTimeout(2000);
     } else {
       log.warning(
-        `Timed out waiting for search results/captcha selector after ${RENDER_ATTEMPTS} render attempts; continuing with whatever was captured (${results.length} items)`
+        `Timed out waiting for ${mode === 'post' ? 'post item extraction' : 'search results/captcha selector'} ` +
+        `after ${RENDER_ATTEMPTS} render attempts; continuing with whatever was captured (${results.length} items)`
       );
     }
   }
@@ -600,7 +626,9 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     // video detail page is server-side rendered, so the item is already in
     // the HTML by the time 'domcontentloaded' fires - no network wait
     // needed. See normalize/itemDetail.js for the extraction details.
-    const rawItem = await extractItemFromPage(page);
+    // Reuses whatever the render-retry loop above already extracted -
+    // no need to hit the page a second time for the same data.
+    const rawItem = postItemFromRetryLoop;
     if (rawItem) {
       for (const item of normalizeItemFromPageData(rawItem, dedupSet, { inputValue: query, log })) {
         if (!isWithinDateRange(item, config.dateRange)) {
