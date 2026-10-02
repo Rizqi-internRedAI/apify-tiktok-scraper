@@ -272,10 +272,29 @@ actor.
 ```bash
 # Install dependencies
 npm install
+npx playwright install chromium
 
-# Run with input
-npm start -- --input '{"hashtags":["fyp"],"sessionCookies":"..."}'
+# Create input.json in the project root (gitignored) - main.js falls back to
+# reading it when Actor.getInput() returns nothing (i.e. not running on the
+# Apify platform)
+cat > input.json <<'EOF'
+{
+  "hashtags": ["fyp"],
+  "sessionCookies": "sessionid=...; sessionid_ss=...; sid_tt=...; sid_guard=..."
+}
+EOF
+
+npm start
 ```
+
+No `APIFY_TOKEN`/`APIFY_PROXY_PASSWORD` set means the actor runs without Apify
+Proxy (see the "Local development" branch in `main.js`'s proxy setup) -
+requests go out directly on the machine's own IP instead. That's fine for a
+home/residential connection and skips Apify Proxy bandwidth cost entirely,
+but loses IP rotation - keep concurrency modest and expect TikTok to start
+challenging/rate-limiting a single IP sooner on very large batches than it
+would behind rotating residential proxies. Output lands in
+`storage/datasets/default/` as one JSON file per item.
 
 ### With Apify CLI
 
