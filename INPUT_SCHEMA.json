@@ -144,7 +144,7 @@
     "proxyCountryCode": {
       "title": "Proxy Country Code",
       "type": "string",
-      "description": "The only proxy control this actor has, and now opt-in (fixed 2026-10-14): leaving this empty means NO proxy at all, not even a best-guess region - set it (e.g. 'ID', matches what red-pharmatiq-api sends) to enable Apify's residential proxy group for that exit country. There's no separate proxy group/type picker, and no fallback guess from the cookies' tt-target-idc anymore.",
+      "description": "The only proxy control this actor has, and now opt-in (fixed 2026-10-14): leaving this empty (or 'None') means NO proxy at all, not even a best-guess region - set it (e.g. 'ID', matches what red-pharmatiq-api sends) to enable Apify's residential proxy group for that exit country. There's no separate proxy group/type picker, and no fallback guess from the cookies' tt-target-idc anymore.",
       "default": "",
       "editor": "textfield"
     },
