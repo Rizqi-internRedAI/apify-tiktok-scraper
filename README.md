@@ -60,7 +60,7 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `commentsPerPost` | integer | *(unset, falls back to 20)* | Max comments per video, only relevant when `includeComments` is on — not currently used by `red-pharmatiq-api` |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
 | `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, or `both` |
-| `proxyCountryCode` | string | `""` | The only proxy field this actor uses, and opt-in: empty means **no proxy at all** (Apify Cloud or local alike). Set it (e.g. `ID`) to enable the RESIDENTIAL proxy group for that exit country |
+| `proxyCountryCode` | string | `""` | The only proxy field this actor uses, and opt-in: empty (or `None`) means **no proxy at all** (Apify Cloud or local alike). Set it (e.g. `ID`) to enable the RESIDENTIAL proxy group for that exit country |
 | `downloadSubtitlesOptions` | string | `NO_SUBTITLES` | clockworks-compatible. `DOWNLOAD_SUBTITLES` fetches TikTok's native closed captions and re-hosts them in this run's key-value store |
 | `scrapeRelatedSearchWords` | boolean | `false` | clockworks-compatible. Adds TikTok's "Others also searched for" keywords to every result (search mode only) — see caveat below |
 

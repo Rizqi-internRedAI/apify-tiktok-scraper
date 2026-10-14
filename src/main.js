@@ -120,7 +120,12 @@ async function parseInput(input) {
   });
 
   const maxItems = input.maxItems || input.resultsPerPage || DEFAULT_MAX_ITEMS;
-  const proxyCountryCode = input.proxyCountryCode || null;
+  // 'None' is clockworks' own "no proxy country" sentinel - treated the same
+  // as blank so it doesn't get passed to Apify Proxy as a country code.
+  const rawProxyCountry = String(input.proxyCountryCode ?? '').trim();
+  const proxyCountryCode = rawProxyCountry && rawProxyCountry.toLowerCase() !== 'none'
+    ? rawProxyCountry
+    : null;
   const downloadSubtitles = input.downloadSubtitlesOptions === 'DOWNLOAD_SUBTITLES';
   const scrapeRelatedSearchWords = input.scrapeRelatedSearchWords || false;
 
