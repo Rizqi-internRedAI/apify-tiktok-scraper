@@ -769,10 +769,14 @@ Actor.main(async () => {
   // subtitle text so red-pharmatiq-api can fetch it without a TikTok cookie.
   const kvStore = await Actor.openKeyValueStore();
 
-  // proxyCountryCode (clockworks-compatible input field) takes priority over
-  // the tt-target-idc-derived guess when choosing the proxy exit region.
-  const proxyCountryCode = config.proxyCountryCode
-    || (targetIdc === 'alisg' ? 'SG' : (targetIdc === 'useast2a' ? 'US' : undefined));
+  // proxyCountryCode is now the ONLY switch for proxy usage (fixed
+  // 2026-10-14). It used to be forced on unconditionally whenever running
+  // on Apify Cloud, with a tt-target-idc guess filling in a region when
+  // left blank - so an empty proxyCountryCode still burned expensive
+  // PROXY_RESIDENTIAL_TRANSFER_GBYTES bandwidth without the caller ever
+  // opting into it. Leaving it blank now means "no proxy at all", not
+  // "let the actor guess a region".
+  const useProxy = Boolean(config.proxyCountryCode);
 
   // Create crawler
   const crawlerOptions = {
@@ -909,20 +913,28 @@ Actor.main(async () => {
     },
   };
 
-  // Add proxy configuration only if on Apify platform (has proxy support)
-  // For local dev, you need APIFY_PROXY_PASSWORD or APIFY_TOKEN env var
-  // Or use a custom residential proxy
-  if (Actor.apifyClient) {
+  // Proxy is opt-in via proxyCountryCode - no proxy at all (not Apify
+  // Proxy, not a custom one) when it's left blank, on Apify Cloud or
+  // locally alike. Previously this was forced on unconditionally whenever
+  // Actor.apifyClient was set (i.e. running on Apify Cloud), regardless of
+  // proxyCountryCode.
+  if (!useProxy) {
+    log.warning(
+      'proxyCountryCode is empty - running without any proxy (not Apify Proxy, not a ' +
+      'custom proxy). TikTok may show a captcha/verification challenge without a ' +
+      'residential IP. Set proxyCountryCode to enable Apify residential proxy.'
+    );
+  } else if (Actor.apifyClient) {
     crawlerOptions.proxyConfiguration = await Actor.createProxyConfiguration({
       groups: ['RESIDENTIAL'],
-      countryCode: proxyCountryCode,
+      countryCode: config.proxyCountryCode,
     });
   } else {
     // Local development - try to use Apify Proxy if available
     try {
       crawlerOptions.proxyConfiguration = await Actor.createProxyConfiguration({
         groups: ['RESIDENTIAL'],
-        countryCode: proxyCountryCode,
+        countryCode: config.proxyCountryCode,
       });
     } catch {
       // Try custom proxy URL from environment
