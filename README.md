@@ -60,7 +60,7 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `commentsPerPost` | integer | *(unset, falls back to 20)* | Max comments per video, only relevant when `includeComments` is on — not currently used by `red-pharmatiq-api` |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
 | `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, or `both` |
-| `proxyCountryCode` | string | `""` | The only proxy field this actor uses (e.g. `ID`) — overrides the tt-target-idc guess. Always uses the RESIDENTIAL proxy group internally |
+| `proxyCountryCode` | string | `""` | The only proxy field this actor uses, and opt-in: empty means **no proxy at all** (Apify Cloud or local alike). Set it (e.g. `ID`) to enable the RESIDENTIAL proxy group for that exit country |
 | `downloadSubtitlesOptions` | string | `NO_SUBTITLES` | clockworks-compatible. `DOWNLOAD_SUBTITLES` fetches TikTok's native closed captions and re-hosts them in this run's key-value store |
 | `scrapeRelatedSearchWords` | boolean | `false` | clockworks-compatible. Adds TikTok's "Others also searched for" keywords to every result (search mode only) — see caveat below |
 
@@ -272,10 +272,29 @@ actor.
 ```bash
 # Install dependencies
 npm install
+npx playwright install chromium
 
-# Run with input
-npm start -- --input '{"hashtags":["fyp"],"sessionCookies":"..."}'
+# Create input.json in the project root (gitignored) - main.js falls back to
+# reading it when Actor.getInput() returns nothing (i.e. not running on the
+# Apify platform)
+cat > input.json <<'EOF'
+{
+  "hashtags": ["fyp"],
+  "sessionCookies": "sessionid=...; sessionid_ss=...; sid_tt=...; sid_guard=..."
+}
+EOF
+
+npm start
 ```
+
+No `APIFY_TOKEN`/`APIFY_PROXY_PASSWORD` set means the actor runs without Apify
+Proxy (see the "Local development" branch in `main.js`'s proxy setup) -
+requests go out directly on the machine's own IP instead. That's fine for a
+home/residential connection and skips Apify Proxy bandwidth cost entirely,
+but loses IP rotation - keep concurrency modest and expect TikTok to start
+challenging/rate-limiting a single IP sooner on very large batches than it
+would behind rotating residential proxies. Output lands in
+`storage/datasets/default/` as one JSON file per item.
 
 ### With Apify CLI
 
