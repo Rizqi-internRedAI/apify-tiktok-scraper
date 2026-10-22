@@ -152,6 +152,11 @@ export function normalizeClockworksItem(item, { inputValue = null, log = console
     // derived, not a real TikTok flag: a photo-carousel post has imagePost set.
     isSlideshow: !!item.imagePost,
     isAd: item.isAd || false,
+    // TikTok Shop product link on the post ("keranjang kuning"), same field
+    // name clockworks uses. creatorType treats such posts as affiliate
+    // content and everything else as regular creator content.
+    hasTikTokShopProduct: hasShopProduct(item),
+    creatorType: hasShopProduct(item) ? 'affiliate' : 'content_creator',
     effectStickers: item.effectStickers || null,
     hashtags,
     mentions,
@@ -172,6 +177,20 @@ export function normalizeClockworksItem(item, { inputValue = null, log = console
     commentsDatasetUrl: null,
     error: null,
   };
+}
+
+// Checked against clockworks' own hasTikTokShopProduct labels: isECVideo=1
+// and anchor type 33 appear only on Shop posts. Other anchor types (e.g. 35,
+// 54 for CapCut) also show up on regular posts, so they don't count.
+const SHOP_PRODUCT_ANCHOR_TYPE = 33;
+
+function hasShopProduct(item) {
+  if (Number(item.isECVideo) === 1) return true;
+  const anchorTypes = [
+    ...(Array.isArray(item.AnchorTypes) ? item.AnchorTypes : []),
+    ...(Array.isArray(item.anchors) ? item.anchors.map((a) => a?.type) : []),
+  ];
+  return anchorTypes.some((t) => Number(t) === SHOP_PRODUCT_ANCHOR_TYPE);
 }
 
 function numOrNull(value) {

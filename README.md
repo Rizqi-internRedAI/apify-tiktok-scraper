@@ -223,6 +223,8 @@ legacy Threads-style shape instead:
   "commentCount": 1200,
   "repostCount": 500,
   "isAd": false,
+  "hasTikTokShopProduct": false,
+  "creatorType": "content_creator",
   "hashtags": [{"name": "fyp"}],
   "authorMeta": {
     "name": "username",
@@ -244,6 +246,16 @@ legacy Threads-style shape instead:
   "input": "asthinforce"
 }
 ```
+
+`hasTikTokShopProduct` is `true` when the post carries a TikTok Shop product
+link ("keranjang kuning"), and `creatorType` is then `affiliate`; otherwise
+`content_creator`. It's read from TikTok's own `isECVideo` flag (post pages)
+and anchor type 33 (both post and search pages). Checked against clockworks'
+`hasTikTokShopProduct` on 46 labelled posts (21 Shop, 25 regular, all
+matched); on search pages, the anchor-33 posts were exactly the ones with no
+video link, which is how TikTok Shop videos look. A Shop link marks the post
+as selling a product - it doesn't tell an affiliate apart from the brand's own
+shop account.
 
 Some fields (subtitle track field name, cover URLs, `isPinned`/`isSlideshow`,
 `authorMeta.friends`) are mapped from general TikTok API knowledge rather than
