@@ -136,8 +136,8 @@
     "outputSchema": {
       "title": "Output Schema",
       "type": "string",
-      "enum": ["clockworks", "compat", "native", "both"],
-      "description": "'clockworks' matches clockworks/tiktok-scraper's field names (default - red-pharmatiq-api's payloads never set this field, so it must work with no explicit opt-in). 'compat' matches the legacy Threads-style schema, 'native' is full TikTok data, 'both' includes all fields.",
+      "enum": ["clockworks", "compat", "native", "both", "synapse-formatted"],
+      "description": "'clockworks' matches clockworks/tiktok-scraper's field names (default - red-pharmatiq-api's payloads never set this field, so it must work with no explicit opt-in). 'compat' matches the legacy Threads-style schema, 'native' is full TikTok data, 'both' includes all fields. 'synapse-formatted' matches red-synapse-dbs-be's /ingest post shape (platform 'tiktok', video URLs as strings, hashtags as one string, plus a 'tag' field holding the query that produced the post).",
       "default": "clockworks",
       "editor": "select"
     },

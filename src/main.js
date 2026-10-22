@@ -15,6 +15,7 @@ import { setupPagination, waitForCount } from './paginate.js';
 import { SessionManager, detectCaptcha, detectLoggedOut } from './antibot.js';
 import { extractSubtitleInfos, uploadSubtitles } from './subtitles.js';
 import { extractItemFromPage, normalizeItemFromPageData } from './normalize/itemDetail.js';
+import { toSynapseFormatted } from './normalize/synapse.js';
 
 // Local development fallback for logging
 const logger = {
@@ -106,6 +107,7 @@ async function parseInput(input) {
   // never set outputSchema (it's not part of clockworks' own input contract),
   // so the shape it actually gets has to work with no explicit opt-in.
   // Pass outputSchema:'compat' explicitly for the legacy Threads-style shape.
+  // 'synapse-formatted' emits items shaped for red-synapse-dbs-be's /ingest.
   const outputSchema = input.outputSchema || 'clockworks';
 
   // clockworks-compatible fields (red-pharmatiq-api sends these) plus the
@@ -309,6 +311,7 @@ function filterByOutputSchema(wrapperItem, schema) {
 
   if (schema === 'clockworks') return clockworks;
   if (schema === 'native') return raw;
+  if (schema === 'synapse-formatted') return toSynapseFormatted(wrapperItem);
 
   if (schema === 'both') {
     return { ...compat, _raw: raw };
