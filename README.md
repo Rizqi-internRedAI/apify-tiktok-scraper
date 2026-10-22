@@ -59,7 +59,7 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `includeComments` | boolean | `false` | Whether to scrape comments |
 | `commentsPerPost` | integer | *(unset, falls back to 20)* | Max comments per video, only relevant when `includeComments` is on — not currently used by `red-pharmatiq-api` |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
-| `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, or `both` |
+| `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, `both`, or `synapse-formatted` |
 | `proxyCountryCode` | string | `""` | The only proxy field this actor uses, and opt-in: empty (or `None`) means **no proxy at all** (Apify Cloud or local alike). Set it (e.g. `ID`) to enable the RESIDENTIAL proxy group for that exit country |
 | `downloadSubtitlesOptions` | string | `NO_SUBTITLES` | clockworks-compatible. `DOWNLOAD_SUBTITLES` fetches TikTok's native closed captions and re-hosts them in this run's key-value store |
 | `scrapeRelatedSearchWords` | boolean | `false` | clockworks-compatible. Adds TikTok's "Others also searched for" keywords to every result (search mode only) — see caveat below |
@@ -251,6 +251,56 @@ independently re-verified live — see the confidence notes in
 `src/normalize/clockworks.js`. Run once for real and spot-check a few items
 against a past clockworks dataset before pointing production traffic at this
 actor.
+
+### `synapse-formatted` Output Schema (red-synapse-dbs-be)
+
+Set `outputSchema: "synapse-formatted"` to get items shaped like the
+`ScrapedThread` model behind red-synapse-dbs-be's `POST /api/v1/ingest`, so a
+caller can group the dataset by `tag` and post it as
+`{ scraped_at, tag, total_posts, posts: [...] }` without reshaping. The default
+(`clockworks`) is unchanged.
+
+```json
+{
+  "post_id": "7123456789012345678",
+  "shortcode": "7123456789012345678",
+  "post_url": "https://www.tiktok.com/@username/video/7123456789012345678",
+  "text": "Video caption #dbs",
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "user": {
+    "user_id": "6812345678901234567",
+    "username": "username",
+    "full_name": "Display Name",
+    "profile_url": "https://www.tiktok.com/@username",
+    "profile_pic_url": "https://...",
+    "is_verified": false,
+    "follower_count": 12000
+  },
+  "likes": 50000, "replies": 1200, "reposts": 500, "quotes": null,
+  "reshares": 3000, "views": 500000, "saves": 1200, "follows": 12000,
+  "images": [],
+  "videos": ["https://..."],
+  "is_reply": false,
+  "source": "api",
+  "platform": "tiktok",
+  "content_type": "video",
+  "duration_seconds": 45,
+  "hashtags": "#dbs #digibank",
+  "music_name": "original sound",
+  "music_author": "username",
+  "tag": "Bank DBS"
+}
+```
+
+Differences from `compat`, all dictated by the backend model: `platform` is
+always `tiktok` (the backend defaults to `threads`), `videos` is a list of URL
+strings with the duration in `duration_seconds`, `hashtags` is one
+space-separated string, and `saves`/`follows`/`music_*`/`content_type` are
+filled. `tag` is the job query (search term, hashtag, profile, or URL) that
+produced the post; the backend matches posts to products by the payload-level
+tag, so group items by it. `content_type` is `slideshow` for photo carousels
+(`images` filled, `videos` empty) and `video` otherwise. Items without a post
+id or a timestamp are dropped. Comments are not included.
 
 ## Usage
 
