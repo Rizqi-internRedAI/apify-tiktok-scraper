@@ -84,9 +84,15 @@ function normalizeComment(comment) {
  * purchase-intent flag, and who commented. TikTok's web comment API does not
  * expose the commenter's age, gender, region or follower count.
  */
-export function normalizeClockworksComment(comment) {
+export function normalizeClockworksComment(comment, { authorId = null } = {}) {
   const user = comment.user || {};
   const createTime = comment.create_time ? parseInt(comment.create_time, 10) : null;
+  const isByAuthor = authorId ? String(user.uid) === String(authorId) : null;
+  // Replies are only present when includeReplies fetched them; null means
+  // "not fetched", [] means "fetched, none".
+  const replies = Array.isArray(comment.replies)
+    ? comment.replies.map((reply) => normalizeClockworksComment(reply, { authorId }))
+    : null;
   return {
     id: comment.cid,
     text: comment.text || '',
@@ -98,8 +104,14 @@ export function normalizeClockworksComment(comment) {
     // TikTok's own flag for comments that signal intent to buy.
     isHighPurchaseIntent: comment.is_high_purchase_intent ?? null,
     isReply: Boolean(comment.reply_id && comment.reply_id !== '0'),
+    // For a reply: the comment it belongs to.
+    parentCommentId: comment.reply_id && comment.reply_id !== '0' ? comment.reply_id : null,
+    // Written by the post's creator (null when the creator is unknown).
+    isByAuthor,
     likedByAuthor: comment.is_author_digged ?? null,
     pinnedByAuthor: Boolean(comment.author_pin),
+    // Whether the creator replied to this comment (null until replies were fetched).
+    repliedByAuthor: replies && isByAuthor !== null ? replies.some((r) => r.isByAuthor) : null,
     user: {
       id: user.uid || null,
       uniqueId: user.unique_id || null,
@@ -107,5 +119,6 @@ export function normalizeClockworksComment(comment) {
       profileUrl: user.unique_id ? `https://www.tiktok.com/@${user.unique_id}` : null,
       verified: Boolean(user.custom_verify || user.enterprise_verify_reason),
     },
+    replies,
   };
 }

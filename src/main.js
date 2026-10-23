@@ -18,7 +18,7 @@ import { extractItemFromPage, normalizeItemFromPageData } from './normalize/item
 import { toSynapseFormatted } from './normalize/synapse.js';
 import { normalizeClockworksItem } from './normalize/clockworks.js';
 import { normalizeClockworksComment } from './normalize/comment.js';
-import { extractProfileFromPage, normalizeProfileSnapshot } from './normalize/profile.js';
+import { extractProfileFromPage, normalizeProfileSnapshot, parseProfileHtml } from './normalize/profile.js';
 
 // Local development fallback for logging
 const logger = {
@@ -112,6 +112,14 @@ async function parseInput(input) {
   // carries (content categories, post country, moderation warnings). One
   // extra page load per post, so off by default.
   const enrichPostDetails = input.enrichPostDetails || false;
+  // Also fetch the replies under each fetched comment (one extra API call
+  // per comment that has replies, more when it has many).
+  const includeReplies = input.includeReplies || false;
+  const repliesPerComment = input.repliesPerComment || 10;
+  // Attach each author's account snapshot (authorProfile) to search and post
+  // items too, as profile jobs always do. One profile page fetch per unique
+  // author, cached for the whole run.
+  const includeAuthorProfiles = input.includeAuthorProfiles || false;
   const downloadMedia = input.downloadMedia || false;
   // 'clockworks' is the default, not 'compat': red-pharmatiq-api's payloads
   // never set outputSchema (it's not part of clockworks' own input contract),
@@ -188,6 +196,9 @@ async function parseInput(input) {
     commentsPerPost,
     commentVideosLimit,
     enrichPostDetails,
+    includeReplies,
+    repliesPerComment,
+    includeAuthorProfiles,
     downloadMedia,
     outputSchema,
     proxyCountryCode,
@@ -372,10 +383,61 @@ async function attachSubtitles(page, wrapperItem, kvStore, log) {
 // PROFILE_SNAPSHOTS - one record per account even when it has no posts.
 // Kept in memory and rewritten whole so concurrent jobs can't drop entries.
 const profileSnapshots = [];
+const savedSnapshotIds = new Set();
 
 async function saveProfileSnapshot(kvStore, snapshot) {
+  const key = snapshot.id || snapshot.uniqueId;
+  if (savedSnapshotIds.has(key)) return;
+  savedSnapshotIds.add(key);
   profileSnapshots.push(snapshot);
   await kvStore.setValue('PROFILE_SNAPSHOTS', profileSnapshots);
+}
+
+// Account snapshots already read this run, by lowercase username - an
+// author who shows up in several jobs or posts is fetched once. null means
+// the fetch failed, so it isn't retried for every post of that author.
+const authorProfileCache = new Map();
+
+/**
+ * The account snapshot of one author for search/post items. Reads the
+ * profile page's SSR state with a plain HTTP request first (no rendering);
+ * when TikTok answers that with its small JS-challenge page instead, the
+ * profile page is opened in the browser. A fetch() from inside the TikTok
+ * page doesn't work here: it always gets the challenge page, and
+ * /api/user/detail/ answers with an empty body (both confirmed 2026-10-23).
+ */
+async function getAuthorProfile(page, username, log) {
+  const key = String(username || '').toLowerCase();
+  if (!key) return null;
+  if (authorProfileCache.has(key)) return authorProfileCache.get(key);
+
+  let userInfo = null;
+  try {
+    const res = await fetch(`https://www.tiktok.com/@${encodeURIComponent(username)}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+        'Accept-Language': 'id-ID,id;q=0.9,en;q=0.8',
+      },
+    });
+    userInfo = parseProfileHtml(await res.text());
+  } catch (error) {
+    log.warning(`Profile HTTP fetch failed for @${username}: ${error.message}`);
+  }
+
+  if (!userInfo) {
+    try {
+      await page.goto(`https://www.tiktok.com/@${username}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(3000);
+      userInfo = await extractProfileFromPage(page);
+    } catch (error) {
+      log.warning(`Profile page visit failed for @${username}: ${error.message}`);
+    }
+  }
+
+  const snapshot = normalizeProfileSnapshot(userInfo);
+  if (!snapshot) log.warning(`No profile data found for @${username}`);
+  authorProfileCache.set(key, snapshot);
+  return snapshot;
 }
 
 let loggedMissingRelatedWordsOnce = false;
@@ -435,27 +497,49 @@ async function extractRelatedSearchWords(page, log) {
  * cookies), while the same call made with fetch() from the page returns the
  * comments. Never throws; returns the raw comments.
  */
-async function fetchCommentsInPage(page, awemeId, limit, log) {
+async function fetchCommentsInPage(page, awemeId, limit, log, { includeReplies = false, repliesPerComment = 10 } = {}) {
+  const comments = await fetchCommentPages(page, `/api/comment/list/?aid=1988&aweme_id=${awemeId}`, limit, awemeId, log);
+  if (includeReplies) {
+    for (const comment of comments) {
+      if (!(comment.reply_comment_total > 0)) {
+        comment.replies = [];
+        continue;
+      }
+      comment.replies = await fetchCommentPages(
+        page,
+        `/api/comment/list/reply/?aid=1988&item_id=${awemeId}&comment_id=${comment.cid}`,
+        repliesPerComment,
+        `${awemeId}/${comment.cid}`,
+        log
+      );
+    }
+  }
+  return comments;
+}
+
+/**
+ * Page through one TikTok comment-list endpoint (a post's top-level comments
+ * or one comment's replies - same response shape) with fetch() from inside
+ * the page, up to `limit` comments.
+ */
+async function fetchCommentPages(page, baseUrl, limit, label, log) {
   const comments = [];
   let cursor = 0;
   for (let call = 0; call < 20 && comments.length < limit; call += 1) {
     const count = Math.min(50, limit - comments.length);
     let data = null;
     try {
-      data = await page.evaluate(async ({ id, cur, cnt }) => {
-        const res = await fetch(
-          `/api/comment/list/?aid=1988&aweme_id=${id}&count=${cnt}&cursor=${cur}`,
-          { credentials: 'include' }
-        );
+      data = await page.evaluate(async (url) => {
+        const res = await fetch(url, { credentials: 'include' });
         const text = await res.text();
         return text ? JSON.parse(text) : null;
-      }, { id: awemeId, cur: cursor, cnt: count });
+      }, `${baseUrl}&count=${count}&cursor=${cursor}`);
     } catch (error) {
-      log.warning(`Comment fetch failed for ${awemeId}: ${error.message}`);
+      log.warning(`Comment fetch failed for ${label}: ${error.message}`);
       break;
     }
     if (!data || !Array.isArray(data.comments)) {
-      if (call === 0) log.warning(`No comment data returned for ${awemeId} (empty or blocked response)`);
+      if (call === 0) log.warning(`No comment data returned for ${label} (empty or blocked response)`);
       break;
     }
     comments.push(...data.comments.slice(0, limit - comments.length));
@@ -484,10 +568,14 @@ async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
     });
     // Same settle time 'post' mode gives the page before reading its SSR
     // state. TikTok now and then serves an empty document (no title, no
-    // state) for a post page; one reload usually fixes it.
+    // state) for a post page - more often while several jobs load pages in
+    // parallel - so reload with a growing pause before giving up.
     let detail = null;
-    for (let attempt = 1; attempt <= 2 && !detail; attempt += 1) {
-      if (attempt > 1) await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+    for (let attempt = 1; attempt <= 3 && !detail; attempt += 1) {
+      if (attempt > 1) {
+        await page.waitForTimeout(attempt * 3000);
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+      }
       await page.waitForTimeout(3000);
       detail = await extractItemFromPage(page);
       if (!detail) {
@@ -532,6 +620,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   }
 
   let skippedByDate = 0;
+  let collecting = true;
 
   // Build URL
   const url = buildUrl(mode, query, config.sortBy, config.publishedWithin, config.language);
@@ -560,6 +649,10 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     dedupSet,
     meta: { inputValue: query, log },
     onItem: (item) => {
+      // Collection ends with pagination: the post-page visits that follow
+      // (enrichPostDetails, author profiles) load TikTok's recommended
+      // videos, which must not become results of this job.
+      if (!collecting) return;
       if (!isWithinDateRange(item, config.dateRange)) {
         skippedByDate += 1;
         return;
@@ -764,6 +857,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     });
   }
 
+  collecting = false;
   log.info(`Scraped ${results.length} items for ${mode} job: "${query}"` +
     (skippedByDate > 0 ? ` (skipped ${skippedByDate} outside date range)` : ''));
 
@@ -791,12 +885,17 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     const targets = withComments.slice(0, config.commentVideosLimit);
     log.info(`Fetching comments for ${targets.length} of ${results.length} posts`);
     for (const wrapper of targets) {
-      const rawComments = await fetchCommentsInPage(page, wrapper.id, config.commentsPerPost, log);
-      const comments = rawComments.map(normalizeClockworksComment);
+      const rawComments = await fetchCommentsInPage(page, wrapper.id, config.commentsPerPost, log, {
+        includeReplies: config.includeReplies,
+        repliesPerComment: config.repliesPerComment,
+      });
+      const authorId = wrapper.raw?.author?.id;
+      const comments = rawComments.map((c) => normalizeClockworksComment(c, { authorId }));
       if (wrapper.clockworks) wrapper.clockworks.comments = comments;
       if (wrapper.raw) wrapper.raw.comments = rawComments;
       if (wrapper.compat) wrapper.compat.comments = comments;
-      log.info(`Comments for ${wrapper.id}: ${comments.length}`);
+      const replyCount = comments.reduce((n, c) => n + (c.replies?.length || 0), 0);
+      log.info(`Comments for ${wrapper.id}: ${comments.length}` + (config.includeReplies ? ` (+${replyCount} replies)` : ''));
     }
   }
 
@@ -813,16 +912,27 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     }
   }
 
-  if (profileSnapshot) {
+  // Every item carries its author's account snapshot: the job's own profile
+  // for profile jobs, and (with includeAuthorProfiles) each post's author for
+  // search and post jobs - so all modes return the same shape. Runs last
+  // because a profile fetch can move the page.
+  const authorProfiles = [];
+  if (profileSnapshot) authorProfileCache.set(String(profileSnapshot.uniqueId || '').toLowerCase(), profileSnapshot);
+  if (profileSnapshot || config.includeAuthorProfiles) {
     for (const wrapper of results) {
-      if (wrapper.clockworks) wrapper.clockworks.authorProfile = profileSnapshot;
-      if (wrapper.raw) wrapper.raw.authorProfile = profileSnapshot;
+      const username = wrapper.raw?.author?.uniqueId;
+      const snapshot = profileSnapshot || (username ? await getAuthorProfile(page, username, log) : null);
+      if (!snapshot) continue;
+      if (wrapper.clockworks) wrapper.clockworks.authorProfile = snapshot;
+      if (wrapper.raw) wrapper.raw.authorProfile = snapshot;
+      if (!authorProfiles.includes(snapshot)) authorProfiles.push(snapshot);
     }
+    if (!profileSnapshot) log.info(`Author profiles attached: ${authorProfiles.length} accounts`);
   }
 
   return {
     query,
-    profile: profileSnapshot,
+    profiles: authorProfiles,
     items: results,
     pagination: { totalItems: results.length, reason: 'scroll_complete' },
   };
@@ -1006,7 +1116,7 @@ Actor.main(async () => {
 
         log.info(`Pushed ${pushed} items to dataset for ${job.mode} job: "${job.query}"`);
 
-        if (result.profile) await saveProfileSnapshot(kvStore, result.profile);
+        for (const snapshot of result.profiles || []) await saveProfileSnapshot(kvStore, snapshot);
       } catch (error) {
         // Handle session rotation on failure
         log.error(`Error scraping "${job.query}": ${error.message}`);

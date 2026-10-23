@@ -72,3 +72,20 @@ export function normalizeProfileSnapshot(userInfo, { scrapedAt = new Date().toIS
     friendCount: num(stats.friendCount),
   };
 }
+
+/**
+ * Same as extractProfileFromPage, for a profile page's HTML fetched outside
+ * the browser. Returns null for TikTok's JS-challenge page (no SSR state).
+ */
+export function parseProfileHtml(html) {
+  if (typeof html !== 'string') return null;
+  const match = html.match(/<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/);
+  if (!match) return null;
+  try {
+    const detail = JSON.parse(match[1])?.__DEFAULT_SCOPE__?.['webapp.user-detail'];
+    if (!detail || detail.statusCode !== 0) return null;
+    return detail.userInfo || null;
+  } catch {
+    return null;
+  }
+}
