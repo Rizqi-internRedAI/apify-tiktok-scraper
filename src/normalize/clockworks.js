@@ -76,6 +76,11 @@ export function normalizeClockworksItem(item, { inputValue = null, log = console
       }
     : null;
 
+  // authorStatsV2 carries the same counts as strings; prefer it when present
+  // (on profile pages it holds the exact figure where authorStats is rounded).
+  const authorStatsV2 = item.authorStatsV2 || {};
+  const authorStat = (key) => numOrNull(authorStatsV2[key]) ?? numOrNull(authorStats[key]);
+
   const authorMeta = {
     // clockworks splits handle vs display name across `name`/`nickName`.
     name: author.uniqueId || null,
@@ -86,11 +91,15 @@ export function normalizeClockworksItem(item, { inputValue = null, log = console
     verified: author.verified || false,
     privateAccount: author.privateAccount ?? null,
     signature: author.signature || null,
-    fans: authorStats.followerCount ?? null,
-    following: authorStats.followingCount ?? null,
-    video: authorStats.videoCount ?? null,
+    fans: authorStat('followerCount'),
+    following: authorStat('followingCount'),
+    video: authorStat('videoCount'),
+    // Total likes the account's videos have received.
+    heart: authorStat('heartCount') ?? authorStat('heart'),
+    // Likes the account has given to other videos.
+    digg: authorStat('diggCount'),
     // best-effort: not a standard TikTok authorStats field; fall back to null.
-    friends: authorStats.friendCount ?? author.friendCount ?? null,
+    friends: authorStat('friendCount') ?? author.friendCount ?? null,
   };
 
   // best-effort: `videoMeta.subtitleLinks` is filled in later by
@@ -127,6 +136,11 @@ export function normalizeClockworksItem(item, { inputValue = null, log = console
     originalCoverUrl: pickUrl(video.originCover?.urlList) || video.originCover || null,
     downloadAddr,
     subtitleLinks: [],
+    // Seconds. Slideshows have no video duration.
+    duration: numOrNull(video.duration),
+    definition: video.definition || null,
+    height: numOrNull(video.height),
+    width: numOrNull(video.width),
   };
 
   const createTime = item.createTime ? parseInt(item.createTime, 10) : null;
@@ -151,12 +165,27 @@ export function normalizeClockworksItem(item, { inputValue = null, log = console
     isPinned: item.isPinnedItem ?? null,
     // derived, not a real TikTok flag: a photo-carousel post has imagePost set.
     isSlideshow: !!item.imagePost,
+    // Raw TikTok isAd. Not a paid-ad flag in practice: search and profile
+    // feeds return true for most TikTok Shop posts (12 of 15 in a 2026-10-23
+    // sample, 11 of them Shop posts). Use hasTikTokShopProduct for affiliate
+    // content.
     isAd: item.isAd || false,
     // TikTok Shop product link on the post ("keranjang kuning"), same field
     // name clockworks uses. creatorType treats such posts as affiliate
     // content and everything else as regular creator content.
     hasTikTokShopProduct: hasShopProduct(item),
     creatorType: hasShopProduct(item) ? 'affiliate' : 'content_creator',
+    // The products behind the keranjang kuning (see extractShopProducts).
+    tiktokShopProducts: extractShopProducts(item),
+    // TikTok's own content labels, e.g. ["Health & Wellness", "Fitness &
+    // Health"]. Only present on the post's own page, so null for search and
+    // profile-feed items unless enrichPostDetails is on.
+    contentCategories: Array.isArray(item.diversificationLabels) ? item.diversificationLabels : null,
+    // TikTok's numeric content category id (no public name mapping).
+    categoryType: numOrNull(item.CategoryType ?? item.categoryType),
+    // Country the post was created in, e.g. "ID" (post page only).
+    locationCreated: item.locationCreated || null,
+    moderation: extractModeration(item),
     effectStickers: item.effectStickers || null,
     hashtags,
     mentions,
@@ -175,8 +204,81 @@ export function normalizeClockworksItem(item, { inputValue = null, log = console
     // empty here so the key always exists regardless.
     relatedSearchWords: [],
     commentsDatasetUrl: null,
+    // Filled in by main.js when includeComments is on (see normalize/comment.js).
+    comments: null,
+    // Filled in by main.js for profile jobs: the account's own page data,
+    // with the time it was read (see normalize/profile.js).
+    authorProfile: null,
     error: null,
   };
+}
+
+/**
+ * TikTok Shop products linked from a post. Each Shop product is an anchor of
+ * type 33 whose `extra` JSON holds the product; TikTok also nests them as a
+ * JSON list inside a type-35 anchor's `extra`. Price is not exposed (TikTok
+ * sends 0), so it is left out.
+ */
+function extractShopProducts(item) {
+  const products = [];
+  const seen = new Set();
+
+  const addProduct = (entry) => {
+    if (Number(entry?.type) !== SHOP_PRODUCT_ANCHOR_TYPE) return;
+    const extra = parseJson(entry.extra) || {};
+    // product_id / seller_id are 19-digit numbers in the JSON, beyond what a
+    // JS number holds exactly - read them as text so they stay exact.
+    const productId = bigIdFromJson(entry.extra, 'product_id') || (entry.id ? String(entry.id) : '');
+    if (!productId || seen.has(productId)) return;
+    seen.add(productId);
+    const categories = Array.isArray(extra.categories)
+      ? [...extra.categories].sort((a, b) => (a.level ?? 0) - (b.level ?? 0)).map((c) => c.category_name).filter(Boolean)
+      : [];
+    products.push({
+      productId,
+      title: extra.title || entry.keyword || null,
+      shortTitle: extra.elastic_title || entry.keyword || null,
+      sellerId: bigIdFromJson(entry.extra, 'seller_id'),
+      categories,
+      productUrl: extra.seo_url || null,
+      source: extra.source || null,
+    });
+  };
+
+  for (const anchor of Array.isArray(item.anchors) ? item.anchors : []) {
+    addProduct(anchor);
+    const nested = parseJson(anchor?.extra);
+    if (Array.isArray(nested)) nested.forEach(addProduct);
+  }
+  return products;
+}
+
+/** TikTok's own moderation state of the post. */
+function extractModeration(item) {
+  const penalty = item.penaltyContext || {};
+  return {
+    isProhibited: item.isProhibited ?? null,
+    takeDown: numOrNull(item.takeDown),
+    warnings: Array.isArray(item.warnInfo) ? item.warnInfo : [],
+    penaltyStatus: numOrNull(penalty.status),
+    isReviewing: item.isReviewing ?? null,
+    isAigc: item.IsAigc ?? (item.aigcLabelType ? true : null),
+  };
+}
+
+function bigIdFromJson(text, key) {
+  if (typeof text !== 'string') return null;
+  const match = text.match(new RegExp(`"${key}"\\s*:\\s*"?(\\d+)`));
+  return match ? match[1] : null;
+}
+
+function parseJson(value) {
+  if (typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 // Checked against clockworks' own hasTikTokShopProduct labels: isECVideo=1

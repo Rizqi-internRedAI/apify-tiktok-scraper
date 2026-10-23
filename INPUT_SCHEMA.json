@@ -10,7 +10,7 @@
       "items": {
         "type": "string"
       },
-      "description": "Usernames (with or without @) to scrape as profile feeds. Non-empty entries are queued as profile-feed jobs. Used by red-pharmatiq-api's POST /api/scrape/tiktok/profile.",
+      "description": "Usernames (with or without @) to scrape as profile feeds. Non-empty entries are queued as profile-feed jobs returning the account's latest posts (resultsPerPage per profile). Every item of a profile job carries the account's own data in clockworks 'authorProfile' (exact follower/like/video counts, account creation date, seller flags, scrapedAt); the same snapshots are saved to the key-value store as PROFILE_SNAPSHOTS. Run on a schedule to build follower history. Used by red-pharmatiq-api's POST /api/scrape/tiktok/profile.",
       "default": [],
       "editor": "json"
     },
@@ -114,17 +114,32 @@
     "includeComments": {
       "title": "Include Comments",
       "type": "boolean",
-      "description": "Whether to scrape comments for each video.",
+      "description": "Fetch each post's top-level comments (text, language, likes, replies, TikTok's purchase-intent flag, commenter). Attached as 'comments' on clockworks items and on the raw item for 'native'. Applies to the first Comment Posts Limit posts of each job that have comments.",
       "default": false,
       "editor": "checkbox"
     },
     "commentsPerPost": {
       "title": "Comments Per Post",
       "type": "integer",
-      "description": "Maximum number of comments to scrape per video. Only relevant when Include Comments is on - left unset by default since comment scraping isn't used yet (falls back to 20 internally if Include Comments is turned on without setting this).",
+      "description": "Maximum number of comments fetched per post when Include Comments is on (default 20).",
       "minimum": 1,
-      "maximum": 100,
+      "maximum": 500,
       "editor": "number"
+    },
+    "commentVideosLimit": {
+      "title": "Comment Posts Limit",
+      "type": "integer",
+      "description": "How many posts per job get their comments fetched when Include Comments is on (default 10).",
+      "minimum": 1,
+      "maximum": 1000,
+      "editor": "number"
+    },
+    "enrichPostDetails": {
+      "title": "Enrich Post Details",
+      "type": "boolean",
+      "description": "Open each scraped post's own page to add the fields only that page carries: TikTok's content categories ('contentCategories', e.g. Health & Wellness), the country the post was made in ('locationCreated') and moderation warnings. Costs one extra page load per post, so it is off by default. Most useful for profile jobs.",
+      "default": false,
+      "editor": "checkbox"
     },
     "downloadMedia": {
       "title": "Download Media",

@@ -13,7 +13,9 @@ import { normalizeClockworksItem } from './clockworks.js';
  * Returns wrapper objects: { id, compat, clockworks, raw }.
  */
 export function normalizeSearchItem(data, seenIds, meta = {}) {
-  const items = data.data || [];
+  // Search responses carry the items in `data`; the profile feed
+  // (/api/post/item_list/, routed here too) carries them in `itemList`.
+  const items = data.data || data.itemList || [];
   const results = [];
 
   for (const entry of items) {

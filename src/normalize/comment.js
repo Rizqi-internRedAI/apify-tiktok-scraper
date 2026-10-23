@@ -77,3 +77,35 @@ function normalizeComment(comment) {
     sub_comment_count: comment.sub_comment_count || 0,
   };
 }
+
+/**
+ * One comment in the shape attached to clockworks items (`comments`). Keeps
+ * what is usable for audience analysis: the text, its language, TikTok's own
+ * purchase-intent flag, and who commented. TikTok's web comment API does not
+ * expose the commenter's age, gender, region or follower count.
+ */
+export function normalizeClockworksComment(comment) {
+  const user = comment.user || {};
+  const createTime = comment.create_time ? parseInt(comment.create_time, 10) : null;
+  return {
+    id: comment.cid,
+    text: comment.text || '',
+    createTime,
+    createTimeISO: createTime ? new Date(createTime * 1000).toISOString() : null,
+    diggCount: comment.digg_count ?? 0,
+    replyCount: comment.reply_comment_total ?? 0,
+    language: comment.comment_language || null,
+    // TikTok's own flag for comments that signal intent to buy.
+    isHighPurchaseIntent: comment.is_high_purchase_intent ?? null,
+    isReply: Boolean(comment.reply_id && comment.reply_id !== '0'),
+    likedByAuthor: comment.is_author_digged ?? null,
+    pinnedByAuthor: Boolean(comment.author_pin),
+    user: {
+      id: user.uid || null,
+      uniqueId: user.unique_id || null,
+      nickname: user.nickname || null,
+      profileUrl: user.unique_id ? `https://www.tiktok.com/@${user.unique_id}` : null,
+      verified: Boolean(user.custom_verify || user.enterprise_verify_reason),
+    },
+  };
+}
