@@ -22,8 +22,10 @@ a filter:
   keywords in. Runs each as a **real TikTok keyword search** (leading `#`
   stripped) rather than clockworks' hashtag/challenge OR-match — that's the
   whole point of using this actor instead of clockworks.
-- **`profiles`** — usernames to scrape as profile feeds. Used by
-  `red-pharmatiq-api`'s `POST /api/scrape/tiktok/profile`.
+- **`profiles`** — usernames to scrape as profile feeds (the account's
+  latest posts plus the account's own data). Used by `red-pharmatiq-api`'s
+  `POST /api/scrape/tiktok/profile`. See
+  [Profile analysis data](#profile-analysis-data) below.
 - **`postUrls`** — direct TikTok post URLs, scraped one-by-one (no
   search/scroll) to refresh a specific post's current metrics. See
   [Scraping by post URL](#scraping-by-post-url-bulk-metric-refresh) below.
@@ -45,7 +47,7 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `profiles` | array | `[]` | Usernames to scrape as profile feeds |
+| `profiles` | array | `[]` | Usernames to scrape as profile feeds — latest `resultsPerPage` posts per account, plus an `authorProfile` snapshot |
 | `hashtags` | array | `[]` | Keywords — run as real keyword search (leading `#` stripped), not hashtag OR-match. What `red-pharmatiq-api` sends |
 | `postUrls` | array | `[]` | Direct post URLs to re-scrape individually, one job each — see below |
 | `resultsPerPage` | integer | `150` | Max items scraped per `hashtags`/`profiles` entry (not used by `postUrls` — always exactly 1 per URL) |
@@ -56,8 +58,10 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `dateFrom` | string | `""` | Keep posts published on/after this date (`YYYY-MM-DD` or ISO datetime). Client-side, all modes |
 | `dateTo` | string | `""` | Keep posts published on/before this date (inclusive). Client-side, all modes |
 | `language` | string | `""` | ISO language code to scope search results. Empty by default — `red-pharmatiq-api`'s ingestion pipeline already filters to id/en downstream, so the scrape itself doesn't need to narrow by language |
-| `includeComments` | boolean | `false` | Whether to scrape comments |
-| `commentsPerPost` | integer | *(unset, falls back to 20)* | Max comments per video, only relevant when `includeComments` is on — not currently used by `red-pharmatiq-api` |
+| `includeComments` | boolean | `false` | Fetch top-level comments of each job's first `commentVideosLimit` posts (that have comments) |
+| `commentsPerPost` | integer | *(unset, falls back to 20)* | Max comments per post when `includeComments` is on |
+| `commentVideosLimit` | integer | *(unset, falls back to 10)* | How many posts per job get their comments fetched |
+| `enrichPostDetails` | boolean | `false` | Open each post's own page for the page-only fields (`contentCategories`, `locationCreated`, moderation warnings). One extra page load per post |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
 | `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, `both`, or `synapse-formatted` |
 | `proxyCountryCode` | string | `""` | The only proxy field this actor uses, and opt-in: empty (or `None`) means **no proxy at all** (Apify Cloud or local alike). Set it (e.g. `ID`) to enable the RESIDENTIAL proxy group for that exit country |
@@ -396,6 +400,64 @@ src/
 6. **Scroll Pagination**: The page scrolls to trigger infinite scroll, loading more results
 7. **Normalization**: Raw API responses are normalized to the output schema
 8. **Dataset Output**: Items are pushed to the Apify dataset
+
+## Profile analysis data
+
+Added for creator profile analysis (Afflo): everything below is what TikTok
+itself exposes publicly. All fields are additive — existing clockworks fields
+are unchanged.
+
+**Per post** (clockworks output, every mode):
+
+| Field | What it is |
+|-------|------------|
+| `tiktokShopProducts` | The products behind the keranjang kuning: `productId`, `title`, `shortTitle`, `sellerId`, `categories` (TikTok Shop category path, e.g. `["Kesehatan", "Obat & Pengobatan Alternatif", "Obat Herbal"]`), `productUrl`, `source`. Price is not exposed (TikTok sends 0) |
+| `contentCategories` | TikTok's own content labels, e.g. `["Health & Wellness", "Fitness & Health"]`. Only on the post's own page: filled in `postUrls` mode, or with `enrichPostDetails` |
+| `categoryType` | TikTok's numeric content category id (no public name mapping) |
+| `locationCreated` | Country the post was made in, e.g. `ID` (post page only) |
+| `moderation` | `isProhibited`, `takeDown`, `warnings`, `penaltyStatus`, `isReviewing`, `isAigc` |
+| `videoMeta.duration` / `definition` / `width` / `height` | Video length (seconds) and resolution |
+| `authorMeta.heart` / `authorMeta.digg` | Total likes the account has received / given |
+| `comments` | With `includeComments`: `id`, `text`, `createTimeISO`, `diggCount`, `replyCount`, `language`, `isHighPurchaseIntent` (TikTok's own purchase-intent flag), `isReply`, `likedByAuthor`, `pinnedByAuthor`, `user` (`id`, `uniqueId`, `nickname`, `profileUrl`, `verified`). `null` when comments weren't fetched for the post |
+
+**Per account** (profile jobs): `authorProfile` on every item, and all
+snapshots of the run in the key-value store record `PROFILE_SNAPSHOTS` (one
+per account, even when it has no posts):
+
+```json
+{
+  "scrapedAt": "2026-10-23T06:54:49.227Z",
+  "uniqueId": "rtariany",
+  "followerCount": 87641,
+  "followingCount": 3734,
+  "heartCount": 5643302,
+  "videoCount": 639,
+  "accountCreateTimeISO": "2020-06-20T05:29:55.000Z",
+  "ttSeller": false,
+  "commerceUser": false,
+  "language": "id",
+  "verified": false,
+  "privateAccount": false
+}
+```
+
+The profile counts are exact; `authorMeta.fans` on post items stays TikTok's
+rounded figure (87600). **Follower growth** can't be backdated — TikTok only
+shows the current count — so run profile jobs on a schedule and keep each
+`scrapedAt` snapshot.
+
+**Not available from TikTok publicly**: follower history, audience
+demographics (age, gender, location — only the account owner sees them),
+commenter region/follower count, watch time, product price and sales.
+
+**How it works / why**: two things made profile jobs return 0 items until
+2026-10-23. (1) The page init script redefined `navigator.webdriver` and
+stubbed `window.chrome`; TikTok detects that and answers the profile feed
+(`/api/post/item_list/`) with an empty body. (2) That feed's items are in
+`itemList`, which the normalizer didn't read. Comments had the same
+empty-body problem when the post page loaded them itself, so they are now
+fetched with `fetch()` from inside the open TikTok page (the page's own SDK
+signs the call) — no extra page load per post.
 
 ## Known Limitations
 

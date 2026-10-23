@@ -16,6 +16,9 @@ import { SessionManager, detectCaptcha, detectLoggedOut } from './antibot.js';
 import { extractSubtitleInfos, uploadSubtitles } from './subtitles.js';
 import { extractItemFromPage, normalizeItemFromPageData } from './normalize/itemDetail.js';
 import { toSynapseFormatted } from './normalize/synapse.js';
+import { normalizeClockworksItem } from './normalize/clockworks.js';
+import { normalizeClockworksComment } from './normalize/comment.js';
+import { extractProfileFromPage, normalizeProfileSnapshot } from './normalize/profile.js';
 
 // Local development fallback for logging
 const logger = {
@@ -102,6 +105,13 @@ async function parseInput(input) {
   const language = input.language || '';
   const includeComments = input.includeComments || false;
   const commentsPerPost = input.commentsPerPost || 20;
+  // How many of a job's posts get their comments fetched (a few API calls
+  // each, no extra page load). Unset keeps the old cap of 10.
+  const commentVideosLimit = input.commentVideosLimit || 10;
+  // Open each scraped post's own page to add the fields only that page
+  // carries (content categories, post country, moderation warnings). One
+  // extra page load per post, so off by default.
+  const enrichPostDetails = input.enrichPostDetails || false;
   const downloadMedia = input.downloadMedia || false;
   // 'clockworks' is the default, not 'compat': red-pharmatiq-api's payloads
   // never set outputSchema (it's not part of clockworks' own input contract),
@@ -176,6 +186,8 @@ async function parseInput(input) {
     language,
     includeComments,
     commentsPerPost,
+    commentVideosLimit,
+    enrichPostDetails,
     downloadMedia,
     outputSchema,
     proxyCountryCode,
@@ -356,6 +368,16 @@ async function attachSubtitles(page, wrapperItem, kvStore, log) {
   }
 }
 
+// Every profile snapshot of this run, also written to the key-value store as
+// PROFILE_SNAPSHOTS - one record per account even when it has no posts.
+// Kept in memory and rewritten whole so concurrent jobs can't drop entries.
+const profileSnapshots = [];
+
+async function saveProfileSnapshot(kvStore, snapshot) {
+  profileSnapshots.push(snapshot);
+  await kvStore.setValue('PROFILE_SNAPSHOTS', profileSnapshots);
+}
+
 let loggedMissingRelatedWordsOnce = false;
 
 /**
@@ -405,48 +427,91 @@ async function extractRelatedSearchWords(page, log) {
 }
 
 /**
- * Scrape comments for a specific video
+ * Fetch up to `limit` top-level comments of one post by calling TikTok's
+ * comment API from inside the already-open tiktok.com page, so the page's
+ * own SDK signs the request. Opening the post page and letting it load the
+ * comment panel does not work: TikTok answers that request with an empty
+ * 200 body (confirmed 2026-10-23, headless and headful, with and without
+ * cookies), while the same call made with fetch() from the page returns the
+ * comments. Never throws; returns the raw comments.
  */
-async function scrapeComments(page, videoId, authorUsername, config) {
-  if (!config.includeComments) return [];
-
-  const log = Actor.log;
-  log.info(`Scraping comments for video: ${videoId}`);
-
+async function fetchCommentsInPage(page, awemeId, limit, log) {
   const comments = [];
-  const dedupSet = new Set();
-
-  // Setup comment interceptor
-  setupInterceptors(page, {
-    endpoints: ['/api/comment/list/'],
-    dedupSet,
-    onItem: (item) => {
-      if (item.compat && item.compat._type === 'comment') {
-        comments.push(item.compat);
-      }
-    },
-    onError: (error) => {
-      log.warning(`Comment interceptor error: ${error.message}`);
-    },
-  });
-
-  // Navigate to video page
-  await page.goto(`https://www.tiktok.com/@${authorUsername}/video/${videoId}`, {
-    waitUntil: 'domcontentloaded',
-    timeout: 30000,
-  });
-
-  // Wait for comments to load
-  await page.waitForTimeout(2000);
-
-  // Scroll to load more comments
-  await setupPagination(page, {
-    targetCount: config.commentsPerPost,
-    stallLimit: 3,
-    scrollDelay: 1500,
-  });
-
+  let cursor = 0;
+  for (let call = 0; call < 20 && comments.length < limit; call += 1) {
+    const count = Math.min(50, limit - comments.length);
+    let data = null;
+    try {
+      data = await page.evaluate(async ({ id, cur, cnt }) => {
+        const res = await fetch(
+          `/api/comment/list/?aid=1988&aweme_id=${id}&count=${cnt}&cursor=${cur}`,
+          { credentials: 'include' }
+        );
+        const text = await res.text();
+        return text ? JSON.parse(text) : null;
+      }, { id: awemeId, cur: cursor, cnt: count });
+    } catch (error) {
+      log.warning(`Comment fetch failed for ${awemeId}: ${error.message}`);
+      break;
+    }
+    if (!data || !Array.isArray(data.comments)) {
+      if (call === 0) log.warning(`No comment data returned for ${awemeId} (empty or blocked response)`);
+      break;
+    }
+    comments.push(...data.comments.slice(0, limit - comments.length));
+    if (!data.has_more || data.cursor === undefined || data.cursor === cursor) break;
+    cursor = data.cursor;
+    await page.waitForTimeout(800);
+  }
   return comments;
+}
+
+/**
+ * Open one scraped post's own page and merge in the fields only that page
+ * carries (enrichPostDetails): content categories, post country, moderation
+ * warnings. Rebuilds the clockworks item from the merged raw item, keeping
+ * what was attached to it after normalization. Never throws.
+ */
+async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
+  const raw = wrapper.raw || {};
+  const username = raw.author?.uniqueId || wrapper.compat?.user?.username;
+  if (!username || !wrapper.id) return;
+
+  try {
+    await page.goto(`https://www.tiktok.com/@${username}/video/${wrapper.id}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+    // Same settle time 'post' mode gives the page before reading its SSR
+    // state. TikTok now and then serves an empty document (no title, no
+    // state) for a post page; one reload usually fixes it.
+    let detail = null;
+    for (let attempt = 1; attempt <= 2 && !detail; attempt += 1) {
+      if (attempt > 1) await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(3000);
+      detail = await extractItemFromPage(page);
+      if (!detail) {
+        await page.waitForTimeout(2000);
+        detail = await extractItemFromPage(page);
+      }
+    }
+    if (!detail || String(detail.id) !== String(wrapper.id)) {
+      log.warning(`enrichPostDetails: no page data for post ${wrapper.id} (got id=${detail?.id ?? 'none'})`);
+      return;
+    }
+    // Page-only fields win; the feed item keeps everything else.
+    wrapper.raw = { ...raw, ...detail };
+  } catch (error) {
+    log.warning(`enrichPostDetails: page visit failed for ${wrapper.id}: ${error.message}`);
+    return;
+  }
+
+  const previous = wrapper.clockworks;
+  wrapper.clockworks = normalizeClockworksItem(wrapper.raw, { inputValue, log });
+  if (previous && wrapper.clockworks) {
+    wrapper.clockworks.videoMeta.subtitleLinks = previous.videoMeta.subtitleLinks;
+    wrapper.clockworks.relatedSearchWords = previous.relatedSearchWords;
+  }
 }
 
 /**
@@ -490,7 +555,6 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       '/api/search/item/full/',
       '/api/challenge/item_list/',
       '/api/post/item_list/',
-      '/api/comment/list/',
       '/api/item_detail/',
     ],
     dedupSet,
@@ -623,6 +687,21 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   log.info(`Results after initial load: ${results.length}`);
 
+  // Profile jobs: the account's own data (exact follower count, account age,
+  // seller flags), stamped with the time it was read.
+  let profileSnapshot = null;
+  if (mode === 'profile') {
+    profileSnapshot = normalizeProfileSnapshot(await extractProfileFromPage(page));
+    if (profileSnapshot) {
+      log.info(
+        `Profile @${profileSnapshot.uniqueId}: ${profileSnapshot.followerCount} followers, ` +
+          `${profileSnapshot.videoCount} videos`
+      );
+    } else {
+      log.warning(`No profile data found on the page for "${query}"`);
+    }
+  }
+
   let relatedSearchWords = [];
   if (mode === 'search' && config.scrapeRelatedSearchWords) {
     relatedSearchWords = await extractRelatedSearchWords(page, log);
@@ -704,23 +783,46 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     await Promise.all(subtitleTasks);
   }
 
-  // Optionally scrape comments for each video
+  // Comments are fetched from the current page (no navigation), so they run
+  // before enrichPostDetails moves the page away. Capped at
+  // commentVideosLimit posts per job and commentsPerPost comments per post.
   if (config.includeComments) {
-    const videosWithComments = results.filter((r) => r.compat?.videos && r.compat.videos.length > 0);
-    log.info(`Scraping comments for ${videosWithComments.length} videos`);
+    const withComments = results.filter((r) => r.id && (r.raw?.stats?.commentCount ?? 1) > 0);
+    const targets = withComments.slice(0, config.commentVideosLimit);
+    log.info(`Fetching comments for ${targets.length} of ${results.length} posts`);
+    for (const wrapper of targets) {
+      const rawComments = await fetchCommentsInPage(page, wrapper.id, config.commentsPerPost, log);
+      const comments = rawComments.map(normalizeClockworksComment);
+      if (wrapper.clockworks) wrapper.clockworks.comments = comments;
+      if (wrapper.raw) wrapper.raw.comments = rawComments;
+      if (wrapper.compat) wrapper.compat.comments = comments;
+      log.info(`Comments for ${wrapper.id}: ${comments.length}`);
+    }
+  }
 
-    for (const video of videosWithComments.slice(0, 10)) {
-      try {
-        const comments = await scrapeComments(page, video.compat.post_id, video.compat.user.username, config);
-        video.compat.comments = comments;
-      } catch (error) {
-        log.warning(`Failed to scrape comments for ${video.compat.post_id}: ${error.message}`);
-      }
+  if (config.enrichPostDetails) {
+    log.info(`Enriching ${results.length} posts from their own pages`);
+    for (const wrapper of results) {
+      // The post page's own (always empty) comments field must not replace
+      // the comments fetched above.
+      const comments = wrapper.clockworks?.comments ?? null;
+      const rawComments = wrapper.raw?.comments;
+      await enrichFromPostPage(page, wrapper, { log, inputValue: query });
+      if (wrapper.clockworks) wrapper.clockworks.comments = comments;
+      if (wrapper.raw && comments) wrapper.raw.comments = rawComments;
+    }
+  }
+
+  if (profileSnapshot) {
+    for (const wrapper of results) {
+      if (wrapper.clockworks) wrapper.clockworks.authorProfile = profileSnapshot;
+      if (wrapper.raw) wrapper.raw.authorProfile = profileSnapshot;
     }
   }
 
   return {
     query,
+    profile: profileSnapshot,
     items: results,
     pagination: { totalItems: results.length, reason: 'scroll_complete' },
   };
@@ -852,13 +954,14 @@ Actor.main(async () => {
           });
         }
 
-        // Override navigator.webdriver to avoid detection
+        // No navigator.webdriver / window.chrome overrides: the
+        // --disable-blink-features=AutomationControlled launch arg already
+        // makes navigator.webdriver false, and redefining it (or stubbing
+        // window.chrome) is itself detectable - confirmed 2026-10-23 that
+        // with either override TikTok answers the profile feed
+        // (/api/post/item_list/) with an empty 200 body, so profile jobs
+        // always came back with 0 items. Search was unaffected.
         await page.addInitScript(() => {
-          Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined,
-          });
-          // Override chrome detection
-          window.chrome = { runtime: {} };
           // Override permissions
           const originalQuery = window.navigator.permissions.query;
           window.navigator.permissions.query = (parameters) =>
@@ -902,6 +1005,8 @@ Actor.main(async () => {
         }
 
         log.info(`Pushed ${pushed} items to dataset for ${job.mode} job: "${job.query}"`);
+
+        if (result.profile) await saveProfileSnapshot(kvStore, result.profile);
       } catch (error) {
         // Handle session rotation on failure
         log.error(`Error scraping "${job.query}": ${error.message}`);
