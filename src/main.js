@@ -637,6 +637,32 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     });
   }
 
+  // Diagnostic only for 'profile' mode: setupInterceptors silently drops
+  // non-200 and non-JSON responses, so record what /api/post/item_list/
+  // actually returned - tells "blocked", "empty body" and "never requested"
+  // apart when a profile job comes back with 0 items.
+  const itemListResponses = [];
+  if (mode === 'profile') {
+    page.on('response', async (res) => {
+      if (!res.url().includes('/api/post/item_list/')) return;
+      const entry = { status: res.status() };
+      try {
+        const body = await res.text();
+        entry.bytes = body.length;
+        const json = JSON.parse(body);
+        entry.statusCode = json.status_code ?? json.statusCode;
+        entry.items = json.itemList?.length ?? 0;
+        entry.hasMore = json.hasMore;
+      } catch (error) {
+        entry.error = error.message.split('\n')[0];
+      }
+      itemListResponses.push(entry);
+    });
+    page.on('requestfailed', (req) => {
+      if (req.url().includes('/api/post/item_list/')) itemListResponses.push({ failed: req.failure()?.errorText });
+    });
+  }
+
   // Setup interceptor BEFORE navigation - captures initial search API response
   setupInterceptors(page, {
     endpoints: [
@@ -860,6 +886,19 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   collecting = false;
   log.info(`Scraped ${results.length} items for ${mode} job: "${query}"` +
     (skippedByDate > 0 ? ` (skipped ${skippedByDate} outside date range)` : ''));
+
+  if (mode === 'profile') {
+    const rendered = await page
+      .evaluate(() => ({
+        title: document.title,
+        videoLinks: document.querySelectorAll('a[href*="/video/"]').length,
+        e2e: [...new Set([...document.querySelectorAll('[data-e2e]')].map((el) => el.getAttribute('data-e2e')))].slice(0, 60),
+        text: (document.querySelector('[data-e2e="user-post-item-list"]')?.parentElement?.innerText
+          || document.querySelector('main')?.innerText || '').slice(0, 300),
+      }))
+      .catch((error) => ({ error: error.message }));
+    log.info(`Profile feed diagnostics: url=${page.url()} item_list=${JSON.stringify(itemListResponses)} page=${JSON.stringify(rendered)}`);
+  }
 
   // clockworks adds the related search words to every video result from
   // the job that found them - applied here, after collection, so it covers
