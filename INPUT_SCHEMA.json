@@ -141,6 +141,28 @@
       "default": false,
       "editor": "checkbox"
     },
+    "includeReplies": {
+      "title": "Include Replies",
+      "type": "boolean",
+      "description": "With Include Comments on, also fetch the replies under each fetched comment (nested as 'replies' on the comment, with 'isReply' and 'parentCommentId'). One extra API call per comment that has replies.",
+      "default": false,
+      "editor": "checkbox"
+    },
+    "repliesPerComment": {
+      "title": "Replies Per Comment",
+      "type": "integer",
+      "description": "Maximum number of replies fetched per comment when Include Replies is on (default 10).",
+      "minimum": 1,
+      "maximum": 500,
+      "editor": "number"
+    },
+    "includeAuthorProfiles": {
+      "title": "Include Author Profiles",
+      "type": "boolean",
+      "description": "Attach each post author's account snapshot ('authorProfile': exact follower/like/video counts, account creation date, seller flags, scrapedAt) to search and post-URL items too, as profile jobs always do. One profile page fetch per unique author, cached for the run; snapshots are also saved to PROFILE_SNAPSHOTS.",
+      "default": false,
+      "editor": "checkbox"
+    },
     "downloadMedia": {
       "title": "Download Media",
       "type": "boolean",

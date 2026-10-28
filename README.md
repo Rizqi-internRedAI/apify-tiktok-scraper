@@ -62,6 +62,9 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `commentsPerPost` | integer | *(unset, falls back to 20)* | Max comments per post when `includeComments` is on |
 | `commentVideosLimit` | integer | *(unset, falls back to 10)* | How many posts per job get their comments fetched |
 | `enrichPostDetails` | boolean | `false` | Open each post's own page for the page-only fields (`contentCategories`, `locationCreated`, moderation warnings). One extra page load per post |
+| `includeReplies` | boolean | `false` | With `includeComments`, also fetch the replies under each comment (nested in `comments[].replies`) |
+| `repliesPerComment` | integer | *(unset, falls back to 10)* | Max replies per comment when `includeReplies` is on |
+| `includeAuthorProfiles` | boolean | `false` | Attach each author's `authorProfile` snapshot to search and post-URL items too (profile jobs always have it). One profile fetch per unique author |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
 | `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, `both`, or `synapse-formatted` |
 | `proxyCountryCode` | string | `""` | The only proxy field this actor uses, and opt-in: empty (or `None`) means **no proxy at all** (Apify Cloud or local alike). Set it (e.g. `ID`) to enable the RESIDENTIAL proxy group for that exit country |
@@ -405,7 +408,16 @@ src/
 
 Added for creator profile analysis (Afflo): everything below is what TikTok
 itself exposes publicly. All fields are additive — existing clockworks fields
-are unchanged.
+are unchanged. All three modes (`hashtags` search, `postUrls`, `profiles`)
+return the same clockworks shape; which fields get filled depends on the
+options below (the `synapse-formatted` output is not affected).
+
+| To get | `hashtags` (search) | `postUrls` | `profiles` |
+|--------|---------------------|------------|------------|
+| `tiktokShopProducts`, `categoryType`, `videoMeta.duration`, `authorMeta.heart` | always | always | always |
+| `contentCategories`, `locationCreated`, full `moderation` | `enrichPostDetails` | always | `enrichPostDetails` |
+| `authorProfile` (+ `PROFILE_SNAPSHOTS`) | `includeAuthorProfiles` | `includeAuthorProfiles` | always |
+| `comments` / `comments[].replies` | `includeComments` / `includeReplies` | same | same |
 
 **Per post** (clockworks output, every mode):
 
@@ -418,11 +430,14 @@ are unchanged.
 | `moderation` | `isProhibited`, `takeDown`, `warnings`, `penaltyStatus`, `isReviewing`, `isAigc` |
 | `videoMeta.duration` / `definition` / `width` / `height` | Video length (seconds) and resolution |
 | `authorMeta.heart` / `authorMeta.digg` | Total likes the account has received / given |
-| `comments` | With `includeComments`: `id`, `text`, `createTimeISO`, `diggCount`, `replyCount`, `language`, `isHighPurchaseIntent` (TikTok's own purchase-intent flag), `isReply`, `likedByAuthor`, `pinnedByAuthor`, `user` (`id`, `uniqueId`, `nickname`, `profileUrl`, `verified`). `null` when comments weren't fetched for the post |
+| `comments` | With `includeComments`: `id`, `text`, `createTimeISO`, `diggCount`, `replyCount`, `language`, `isHighPurchaseIntent` (TikTok's own purchase-intent flag), `isReply`, `parentCommentId`, `isByAuthor` (written by the post's creator), `likedByAuthor`, `pinnedByAuthor`, `repliedByAuthor` (the creator replied; needs `includeReplies`), `user` (`id`, `uniqueId`, `nickname`, `profileUrl`, `verified`), and `replies` (same shape, with `includeReplies`; `null` when not fetched). `comments` itself is `null` when comments weren't fetched for the post |
 
-**Per account** (profile jobs): `authorProfile` on every item, and all
-snapshots of the run in the key-value store record `PROFILE_SNAPSHOTS` (one
-per account, even when it has no posts):
+**Per account** (profile jobs, or any mode with `includeAuthorProfiles`):
+`authorProfile` on every item, and all snapshots of the run in the key-value
+store record `PROFILE_SNAPSHOTS` (one per account, even when a profile has no
+posts). For search/post items the profile page is read with a plain HTTP
+request, falling back to opening it in the browser when TikTok answers with
+its JS-challenge page:
 
 ```json
 {
@@ -457,7 +472,10 @@ stubbed `window.chrome`; TikTok detects that and answers the profile feed
 `itemList`, which the normalizer didn't read. Comments had the same
 empty-body problem when the post page loaded them itself, so they are now
 fetched with `fetch()` from inside the open TikTok page (the page's own SDK
-signs the call) — no extra page load per post.
+signs the call) — no extra page load per post. Replies come the same way from
+`/api/comment/list/reply/`. Item collection stops once a job's pagination is
+done, so the recommended videos TikTok loads on later post/profile page visits
+never leak into the job's results.
 
 ## Known Limitations
 
