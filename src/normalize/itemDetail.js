@@ -91,25 +91,6 @@ export async function extractItemFromPage(page) {
 }
 
 /**
- * Fetch a post's raw item from TikTok's item-detail API with fetch() from
- * inside an already-open tiktok.com page (as the comment API is called) -
- * JSON only, far smaller than the post page's HTML. Returns
- * { status, bytes, item }; item is null when the response carries none.
- */
-export async function fetchItemFromApi(page, itemId) {
-  return page.evaluate(async (url) => {
-    try {
-      const res = await fetch(url, { credentials: 'include' });
-      const text = await res.text();
-      const data = text ? JSON.parse(text) : null;
-      return { status: res.status, bytes: text.length, item: data?.itemInfo?.itemStruct || null };
-    } catch (error) {
-      return { error: String((error && error.message) || error), item: null };
-    }
-  }, `/api/item/detail/?aid=1988&itemId=${itemId}`);
-}
-
-/**
  * Fetch a post page's HTML with fetch() from inside an already-open
  * tiktok.com page and read its SSR state, without navigating. Only the HTML
  * document is downloaded - none of the JS/CSS a navigation re-fetches on
