@@ -1083,16 +1083,29 @@ Actor.main(async () => {
   // "let the actor guess a region".
   const useProxy = Boolean(config.proxyCountryCode);
 
-  // Requests currently being scraped or already pushed. Seen 2026-10-28 (run
-  // 8z7ux5bQCgTLhipSY): after one job failed and was retried, the request
-  // queue handed two still-running jobs out a second time ~3 minutes in, and
-  // both copies scraped and pushed - double items, double proxy traffic.
-  const jobsInFlightOrDone = new Set();
+  // Attempts currently being scraped (uniqueKey#retryCount) and requests
+  // already pushed. Seen 2026-10-28 (run 8z7ux5bQCgTLhipSY): after one job
+  // failed and was retried, the request queue handed two still-running jobs
+  // out a second time ~3 minutes in, and both copies scraped and pushed -
+  // double items, double proxy traffic. Keyed per attempt so a genuine retry
+  // (retryCount + 1) still runs while the timed-out attempt winds down.
+  const attemptsInFlight = new Set();
+  const jobsDone = new Set();
+
+  // A job's time budget grows with the per-post work it does after the feed:
+  // at 300s flat, 10 of 30 profiles with comments + enrich (30 posts each)
+  // timed out and were redone from scratch, ~25% of the run's cost (run
+  // zAXNrYbxluaP3S5Cg). ~8s per enriched post (fetch, pause, a possible
+  // throttling backoff); ~6s per post's comments, ~20s with replies.
+  const perPostSecs = (config.enrichPostDetails ? 8 : 0)
+    + (config.includeComments ? (config.includeReplies ? 20 : 6) : 0);
+  const requestHandlerTimeoutSecs = Math.min(3600, 300 + perPostSecs * config.maxItems);
+  log.info(`Per-job time limit: ${requestHandlerTimeoutSecs}s`);
 
   // Create crawler
   const crawlerOptions = {
     maxRequestRetries: 3,
-    requestHandlerTimeoutSecs: 300,
+    requestHandlerTimeoutSecs,
     // Modest concurrency ceiling - without this Crawlee's autoscaler tends to
     // sit near 1 on typical actor memory allocations, which is fine for a
     // handful of keyword jobs but far too slow for bulk 'post' mode (each
@@ -1186,7 +1199,8 @@ Actor.main(async () => {
     ],
     async requestHandler({ page, request }) {
       const job = request.userData.job;
-      if (jobsInFlightOrDone.has(request.uniqueKey)) {
+      const attemptKey = `${request.uniqueKey}#${request.retryCount}`;
+      if (jobsDone.has(request.uniqueKey) || attemptsInFlight.has(attemptKey)) {
         log.warning(`Skipping duplicate ${job.mode} job: "${job.query}" (already running or done)`);
         return;
       }
@@ -1197,9 +1211,17 @@ Actor.main(async () => {
       await context.addCookies(currentSession);
 
       // Scrape the job
-      jobsInFlightOrDone.add(request.uniqueKey);
+      attemptsInFlight.add(attemptKey);
       try {
         const result = await scrapeQuery(page, { log: Actor.log || logger }, job, config, kvStore);
+
+        // A timed-out attempt keeps running in the background; whichever
+        // attempt finishes first pushes, the other drops its items.
+        if (jobsDone.has(request.uniqueKey)) {
+          log.warning(`Dropping results of a superseded attempt of ${job.mode} job: "${job.query}"`);
+          return;
+        }
+        jobsDone.add(request.uniqueKey);
 
         // Push items to dataset
         let pushed = 0;
@@ -1216,7 +1238,6 @@ Actor.main(async () => {
       } catch (error) {
         // Handle session rotation on failure
         log.error(`Error scraping "${job.query}": ${error.message}`);
-        jobsInFlightOrDone.delete(request.uniqueKey); // the retry must run
         if (sessionManager.hasRemaining()) {
           sessionManager.markFailed(error.message);
           const nextSession = sessionManager.rotate();
@@ -1226,6 +1247,8 @@ Actor.main(async () => {
           }
         }
         throw error;
+      } finally {
+        attemptsInFlight.delete(attemptKey);
       }
     },
     async failedRequestHandler({ request, error }) {
