@@ -1072,6 +1072,12 @@ Actor.main(async () => {
   // "let the actor guess a region".
   const useProxy = Boolean(config.proxyCountryCode);
 
+  // Requests currently being scraped or already pushed. Seen 2026-10-28 (run
+  // 8z7ux5bQCgTLhipSY): after one job failed and was retried, the request
+  // queue handed two still-running jobs out a second time ~3 minutes in, and
+  // both copies scraped and pushed - double items, double proxy traffic.
+  const jobsInFlightOrDone = new Set();
+
   // Create crawler
   const crawlerOptions = {
     maxRequestRetries: 3,
@@ -1169,6 +1175,10 @@ Actor.main(async () => {
     ],
     async requestHandler({ page, request }) {
       const job = request.userData.job;
+      if (jobsInFlightOrDone.has(request.uniqueKey)) {
+        log.warning(`Skipping duplicate ${job.mode} job: "${job.query}" (already running or done)`);
+        return;
+      }
       const currentSession = sessionManager.getCurrent();
 
       // Inject cookies from current session
@@ -1176,6 +1186,7 @@ Actor.main(async () => {
       await context.addCookies(currentSession);
 
       // Scrape the job
+      jobsInFlightOrDone.add(request.uniqueKey);
       try {
         const result = await scrapeQuery(page, { log: Actor.log || logger }, job, config, kvStore);
 
@@ -1194,6 +1205,7 @@ Actor.main(async () => {
       } catch (error) {
         // Handle session rotation on failure
         log.error(`Error scraping "${job.query}": ${error.message}`);
+        jobsInFlightOrDone.delete(request.uniqueKey); // the retry must run
         if (sessionManager.hasRemaining()) {
           sessionManager.markFailed(error.message);
           const nextSession = sessionManager.rotate();
