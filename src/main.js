@@ -14,7 +14,7 @@ import { setupInterceptors, CaptchaError } from './intercept.js';
 import { setupPagination, waitForCount } from './paginate.js';
 import { SessionManager, detectCaptcha, detectLoggedOut } from './antibot.js';
 import { extractSubtitleInfos, uploadSubtitles } from './subtitles.js';
-import { extractItemFromPage, normalizeItemFromPageData } from './normalize/itemDetail.js';
+import { extractItemFromPage, fetchItemFromPostUrl, normalizeItemFromPageData } from './normalize/itemDetail.js';
 import { toSynapseFormatted } from './normalize/synapse.js';
 import { normalizeClockworksItem } from './normalize/clockworks.js';
 import { normalizeClockworksComment } from './normalize/comment.js';
@@ -554,15 +554,53 @@ async function fetchCommentPages(page, baseUrl, limit, label, log) {
  * Open one scraped post's own page and merge in the fields only that page
  * carries (enrichPostDetails): content categories, post country, moderation
  * warnings. Rebuilds the clockworks item from the merged raw item, keeping
- * what was attached to it after normalization. Never throws.
+ * what was attached to it after normalization. Never throws; returns how the
+ * page data was obtained ('fetch' / 'page'), or null when it wasn't.
+ *
+ * The post's HTML is first fetched from inside the current page (no
+ * navigation, ~HTML only); a real page visit is the fallback. A visit costs
+ * ~2.5MB of proxy traffic per post because page.route() disables the HTTP
+ * cache, so TikTok's JS/CSS bundles are downloaded again on every post.
  */
 async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
   const raw = wrapper.raw || {};
   const username = raw.author?.uniqueId || wrapper.compat?.user?.username;
-  if (!username || !wrapper.id) return;
+  if (!username || !wrapper.id) return null;
+  const url = `https://www.tiktok.com/@${username}/video/${wrapper.id}`;
 
+  let detail = null;
+  let source = 'fetch';
+  for (let attempt = 1; attempt <= 2 && !detail; attempt += 1) {
+    if (attempt > 1) await page.waitForTimeout(3000);
+    const fetched = await fetchItemFromPostUrl(page, url).catch((error) => ({ error: error.message }));
+    if (fetched?.item && String(fetched.item.id) === String(wrapper.id)) {
+      detail = fetched.item;
+    } else {
+      log.info(`enrichPostDetails: fetch attempt ${attempt} for ${wrapper.id} gave no data`
+        + ` (status=${fetched?.status ?? '-'} bytes=${fetched?.bytes ?? '-'} error=${fetched?.error ?? '-'})`);
+    }
+  }
+  if (!detail) {
+    source = 'page';
+    detail = await visitPostPage(page, wrapper, url, log);
+  }
+  if (!detail) return null;
+
+  // Page-only fields win; the feed item keeps everything else.
+  wrapper.raw = { ...raw, ...detail };
+  const previous = wrapper.clockworks;
+  wrapper.clockworks = normalizeClockworksItem(wrapper.raw, { inputValue, log });
+  if (previous && wrapper.clockworks) {
+    wrapper.clockworks.videoMeta.subtitleLinks = previous.videoMeta.subtitleLinks;
+    wrapper.clockworks.relatedSearchWords = previous.relatedSearchWords;
+  }
+  return source;
+}
+
+/** Navigate to a post's page and read its SSR item; null when it has none. */
+async function visitPostPage(page, wrapper, url, log) {
   try {
-    await page.goto(`https://www.tiktok.com/@${username}/video/${wrapper.id}`, {
+    await page.goto(url, {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
@@ -585,20 +623,12 @@ async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
     }
     if (!detail || String(detail.id) !== String(wrapper.id)) {
       log.warning(`enrichPostDetails: no page data for post ${wrapper.id} (got id=${detail?.id ?? 'none'})`);
-      return;
+      return null;
     }
-    // Page-only fields win; the feed item keeps everything else.
-    wrapper.raw = { ...raw, ...detail };
+    return detail;
   } catch (error) {
     log.warning(`enrichPostDetails: page visit failed for ${wrapper.id}: ${error.message}`);
-    return;
-  }
-
-  const previous = wrapper.clockworks;
-  wrapper.clockworks = normalizeClockworksItem(wrapper.raw, { inputValue, log });
-  if (previous && wrapper.clockworks) {
-    wrapper.clockworks.videoMeta.subtitleLinks = previous.videoMeta.subtitleLinks;
-    wrapper.clockworks.relatedSearchWords = previous.relatedSearchWords;
+    return null;
   }
 }
 
@@ -940,15 +970,20 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   if (config.enrichPostDetails) {
     log.info(`Enriching ${results.length} posts from their own pages`);
+    const enrichedBy = { fetch: 0, page: 0, failed: 0 };
     for (const wrapper of results) {
       // The post page's own (always empty) comments field must not replace
       // the comments fetched above.
       const comments = wrapper.clockworks?.comments ?? null;
       const rawComments = wrapper.raw?.comments;
-      await enrichFromPostPage(page, wrapper, { log, inputValue: query });
+      const source = await enrichFromPostPage(page, wrapper, { log, inputValue: query });
+      enrichedBy[source || 'failed'] += 1;
       if (wrapper.clockworks) wrapper.clockworks.comments = comments;
       if (wrapper.raw && comments) wrapper.raw.comments = rawComments;
+      // Fetches return in well under a second; pace them like a reader would.
+      if (source === 'fetch') await page.waitForTimeout(1000);
     }
+    log.info(`Enriched posts: ${enrichedBy.fetch} via fetch, ${enrichedBy.page} via page visit, ${enrichedBy.failed} failed`);
   }
 
   // Every item carries its author's account snapshot: the job's own profile
