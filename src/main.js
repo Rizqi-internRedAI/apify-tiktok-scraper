@@ -570,9 +570,12 @@ async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
 
   let detail = null;
   let source = 'fetch';
+  let blocked = false;
   for (let attempt = 1; attempt <= 2 && !detail; attempt += 1) {
-    if (attempt > 1) await page.waitForTimeout(3000);
+    // A 403/429 is TikTok throttling the session: back off longer.
+    if (attempt > 1) await page.waitForTimeout(blocked ? 15000 : 3000);
     const fetched = await fetchItemFromPostUrl(page, url).catch((error) => ({ error: error.message }));
+    blocked = fetched?.status === 403 || fetched?.status === 429;
     if (fetched?.item && String(fetched.item.id) === String(wrapper.id)) {
       detail = fetched.item;
     } else {
@@ -580,9 +583,17 @@ async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
         + ` (status=${fetched?.status ?? '-'} bytes=${fetched?.bytes ?? '-'} error=${fetched?.error ?? '-'})`);
     }
   }
-  if (!detail) {
+  // Visit the page only for an answered-but-empty fetch. A throttled session
+  // gets the same 403 on the visit, which then leaves the tab on Chrome's
+  // error page where every later fetch of the job fails too (run
+  // vUMI1uZL7nezVrb6V lost 38 of 76 posts that way).
+  if (!detail && !blocked) {
     source = 'page';
+    const previousUrl = page.url();
     detail = await visitPostPage(page, wrapper, url, log);
+    if (!detail && !page.url().startsWith('https://www.tiktok.com/')) {
+      await page.goto(previousUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    }
   }
   if (!detail) return null;
 
