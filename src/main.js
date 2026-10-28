@@ -14,7 +14,7 @@ import { setupInterceptors, CaptchaError } from './intercept.js';
 import { setupPagination, waitForCount } from './paginate.js';
 import { SessionManager, detectCaptcha, detectLoggedOut } from './antibot.js';
 import { extractSubtitleInfos, uploadSubtitles } from './subtitles.js';
-import { extractItemFromPage, fetchItemFromPostUrl, normalizeItemFromPageData } from './normalize/itemDetail.js';
+import { extractItemFromPage, fetchItemFromApi, fetchItemFromPostUrl, normalizeItemFromPageData } from './normalize/itemDetail.js';
 import { toSynapseFormatted } from './normalize/synapse.js';
 import { normalizeClockworksItem } from './normalize/clockworks.js';
 import { normalizeClockworksComment } from './normalize/comment.js';
@@ -555,10 +555,11 @@ async function fetchCommentPages(page, baseUrl, limit, label, log) {
  * carries (enrichPostDetails): content categories, post country, moderation
  * warnings. Rebuilds the clockworks item from the merged raw item, keeping
  * what was attached to it after normalization. Never throws; returns how the
- * page data was obtained ('fetch' / 'page'), or null when it wasn't.
+ * page data was obtained ('api' / 'fetch' / 'page'), or null when it wasn't.
  *
- * The post's HTML is first fetched from inside the current page (no
- * navigation, ~HTML only); a real page visit is the fallback. A visit costs
+ * Tried in order of proxy traffic: the item-detail API (JSON only), then the
+ * post's HTML fetched from inside the current page (no navigation), then a
+ * real page visit. A visit costs
  * ~2.5MB of proxy traffic per post because page.route() disables the HTTP
  * cache, so TikTok's JS/CSS bundles are downloaded again on every post.
  */
@@ -569,7 +570,15 @@ async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
   const url = `https://www.tiktok.com/@${username}/video/${wrapper.id}`;
 
   let detail = null;
-  let source = 'fetch';
+  let source = 'api';
+  const fromApi = await fetchItemFromApi(page, wrapper.id).catch((error) => ({ error: error.message }));
+  if (fromApi?.item && String(fromApi.item.id) === String(wrapper.id)) {
+    detail = fromApi.item;
+  } else {
+    log.info(`enrichPostDetails: item API for ${wrapper.id} gave no data`
+      + ` (status=${fromApi?.status ?? '-'} bytes=${fromApi?.bytes ?? '-'} error=${fromApi?.error ?? '-'})`);
+    source = 'fetch';
+  }
   for (let attempt = 1; attempt <= 2 && !detail; attempt += 1) {
     if (attempt > 1) await page.waitForTimeout(3000);
     const fetched = await fetchItemFromPostUrl(page, url).catch((error) => ({ error: error.message }));
@@ -970,7 +979,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   if (config.enrichPostDetails) {
     log.info(`Enriching ${results.length} posts from their own pages`);
-    const enrichedBy = { fetch: 0, page: 0, failed: 0 };
+    const enrichedBy = { api: 0, fetch: 0, page: 0, failed: 0 };
     for (const wrapper of results) {
       // The post page's own (always empty) comments field must not replace
       // the comments fetched above.
@@ -981,9 +990,9 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       if (wrapper.clockworks) wrapper.clockworks.comments = comments;
       if (wrapper.raw && comments) wrapper.raw.comments = rawComments;
       // Fetches return in well under a second; pace them like a reader would.
-      if (source === 'fetch') await page.waitForTimeout(1000);
+      if (source === 'api' || source === 'fetch') await page.waitForTimeout(1000);
     }
-    log.info(`Enriched posts: ${enrichedBy.fetch} via fetch, ${enrichedBy.page} via page visit, ${enrichedBy.failed} failed`);
+    log.info(`Enriched posts: ${enrichedBy.api} via item API, ${enrichedBy.fetch} via fetch, ${enrichedBy.page} via page visit, ${enrichedBy.failed} failed`);
   }
 
   // Every item carries its author's account snapshot: the job's own profile
