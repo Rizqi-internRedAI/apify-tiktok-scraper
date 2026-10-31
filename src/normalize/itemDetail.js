@@ -50,37 +50,64 @@ export function normalizeItemDetail(data, seenIds, meta = {}) {
 }
 
 /**
+ * Runs in the browser: the post's raw item out of a document's embedded SSR
+ * state. Passed to page.evaluate as source, so it must not use anything from
+ * this module's scope.
+ */
+function readItemState(doc) {
+  function tryUniversalData() {
+    const el = doc.querySelector('#__UNIVERSAL_DATA_FOR_REHYDRATION__');
+    if (!el || !el.textContent) return null;
+    const data = JSON.parse(el.textContent);
+    const scope = data?.__DEFAULT_SCOPE__ || {};
+    const videoDetail = scope['webapp.video-detail'];
+    return videoDetail?.itemInfo?.itemStruct || null;
+  }
+
+  function trySigiState() {
+    const el = doc.querySelector('#SIGI_STATE');
+    if (!el || !el.textContent) return null;
+    const data = JSON.parse(el.textContent);
+    const itemModule = data?.ItemModule;
+    if (!itemModule) return null;
+    const firstId = Object.keys(itemModule)[0];
+    return firstId ? itemModule[firstId] : null;
+  }
+
+  try {
+    return tryUniversalData() || trySigiState() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read the single video's raw item straight out of the page's embedded
  * SSR state - no network wait needed, the data is already in the HTML by
  * the time 'domcontentloaded' fires.
  */
 export async function extractItemFromPage(page) {
-  return page.evaluate(() => {
-    function tryUniversalData() {
-      const el = document.querySelector('#__UNIVERSAL_DATA_FOR_REHYDRATION__');
-      if (!el || !el.textContent) return null;
-      const data = JSON.parse(el.textContent);
-      const scope = data?.__DEFAULT_SCOPE__ || {};
-      const videoDetail = scope['webapp.video-detail'];
-      return videoDetail?.itemInfo?.itemStruct || null;
-    }
+  return page.evaluate(`(${readItemState})(document)`);
+}
 
-    function trySigiState() {
-      const el = document.querySelector('#SIGI_STATE');
-      if (!el || !el.textContent) return null;
-      const data = JSON.parse(el.textContent);
-      const itemModule = data?.ItemModule;
-      if (!itemModule) return null;
-      const firstId = Object.keys(itemModule)[0];
-      return firstId ? itemModule[firstId] : null;
-    }
-
+/**
+ * Fetch a post page's HTML with fetch() from inside an already-open
+ * tiktok.com page and read its SSR state, without navigating. Only the HTML
+ * document is downloaded - none of the JS/CSS a navigation re-fetches on
+ * every post (page.route() disables the HTTP cache). Returns
+ * { status, bytes, item }; item is null when the response carries no state.
+ */
+export async function fetchItemFromPostUrl(page, url) {
+  return page.evaluate(`(async () => {
     try {
-      return tryUniversalData() || trySigiState() || null;
-    } catch {
-      return null;
+      const res = await fetch(${JSON.stringify(url)}, { credentials: 'include' });
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      return { status: res.status, bytes: html.length, item: (${readItemState})(doc) };
+    } catch (error) {
+      return { error: String(error && error.message || error), item: null };
     }
-  });
+  })()`);
 }
 
 /**

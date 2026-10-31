@@ -14,7 +14,7 @@ import { setupInterceptors, CaptchaError } from './intercept.js';
 import { setupPagination, waitForCount } from './paginate.js';
 import { SessionManager, detectCaptcha, detectLoggedOut } from './antibot.js';
 import { extractSubtitleInfos, uploadSubtitles } from './subtitles.js';
-import { extractItemFromPage, normalizeItemFromPageData } from './normalize/itemDetail.js';
+import { extractItemFromPage, fetchItemFromPostUrl, normalizeItemFromPageData } from './normalize/itemDetail.js';
 import { toSynapseFormatted } from './normalize/synapse.js';
 import { normalizeClockworksItem } from './normalize/clockworks.js';
 import { normalizeClockworksComment } from './normalize/comment.js';
@@ -554,15 +554,64 @@ async function fetchCommentPages(page, baseUrl, limit, label, log) {
  * Open one scraped post's own page and merge in the fields only that page
  * carries (enrichPostDetails): content categories, post country, moderation
  * warnings. Rebuilds the clockworks item from the merged raw item, keeping
- * what was attached to it after normalization. Never throws.
+ * what was attached to it after normalization. Never throws; returns how the
+ * page data was obtained ('fetch' / 'page'), or null when it wasn't.
+ *
+ * The post's HTML is first fetched from inside the current page (no
+ * navigation, ~HTML only); a real page visit is the fallback. A visit costs
+ * ~2.5MB of proxy traffic per post because page.route() disables the HTTP
+ * cache, so TikTok's JS/CSS bundles are downloaded again on every post.
  */
 async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
   const raw = wrapper.raw || {};
   const username = raw.author?.uniqueId || wrapper.compat?.user?.username;
-  if (!username || !wrapper.id) return;
+  if (!username || !wrapper.id) return null;
+  const url = `https://www.tiktok.com/@${username}/video/${wrapper.id}`;
 
+  let detail = null;
+  let source = 'fetch';
+  let blocked = false;
+  for (let attempt = 1; attempt <= 2 && !detail; attempt += 1) {
+    // A 403/429 is TikTok throttling the session: back off longer.
+    if (attempt > 1) await page.waitForTimeout(blocked ? 15000 : 3000);
+    const fetched = await fetchItemFromPostUrl(page, url).catch((error) => ({ error: error.message }));
+    blocked = fetched?.status === 403 || fetched?.status === 429;
+    if (fetched?.item && String(fetched.item.id) === String(wrapper.id)) {
+      detail = fetched.item;
+    } else {
+      log.info(`enrichPostDetails: fetch attempt ${attempt} for ${wrapper.id} gave no data`
+        + ` (status=${fetched?.status ?? '-'} bytes=${fetched?.bytes ?? '-'} error=${fetched?.error ?? '-'})`);
+    }
+  }
+  // Visit the page only for an answered-but-empty fetch. A throttled session
+  // gets the same 403 on the visit, which then leaves the tab on Chrome's
+  // error page where every later fetch of the job fails too (run
+  // vUMI1uZL7nezVrb6V lost 38 of 76 posts that way).
+  if (!detail && !blocked) {
+    source = 'page';
+    const previousUrl = page.url();
+    detail = await visitPostPage(page, wrapper, url, log);
+    if (!detail && !page.url().startsWith('https://www.tiktok.com/')) {
+      await page.goto(previousUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    }
+  }
+  if (!detail) return null;
+
+  // Page-only fields win; the feed item keeps everything else.
+  wrapper.raw = { ...raw, ...detail };
+  const previous = wrapper.clockworks;
+  wrapper.clockworks = normalizeClockworksItem(wrapper.raw, { inputValue, log });
+  if (previous && wrapper.clockworks) {
+    wrapper.clockworks.videoMeta.subtitleLinks = previous.videoMeta.subtitleLinks;
+    wrapper.clockworks.relatedSearchWords = previous.relatedSearchWords;
+  }
+  return source;
+}
+
+/** Navigate to a post's page and read its SSR item; null when it has none. */
+async function visitPostPage(page, wrapper, url, log) {
   try {
-    await page.goto(`https://www.tiktok.com/@${username}/video/${wrapper.id}`, {
+    await page.goto(url, {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
@@ -585,20 +634,12 @@ async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
     }
     if (!detail || String(detail.id) !== String(wrapper.id)) {
       log.warning(`enrichPostDetails: no page data for post ${wrapper.id} (got id=${detail?.id ?? 'none'})`);
-      return;
+      return null;
     }
-    // Page-only fields win; the feed item keeps everything else.
-    wrapper.raw = { ...raw, ...detail };
+    return detail;
   } catch (error) {
     log.warning(`enrichPostDetails: page visit failed for ${wrapper.id}: ${error.message}`);
-    return;
-  }
-
-  const previous = wrapper.clockworks;
-  wrapper.clockworks = normalizeClockworksItem(wrapper.raw, { inputValue, log });
-  if (previous && wrapper.clockworks) {
-    wrapper.clockworks.videoMeta.subtitleLinks = previous.videoMeta.subtitleLinks;
-    wrapper.clockworks.relatedSearchWords = previous.relatedSearchWords;
+    return null;
   }
 }
 
@@ -940,15 +981,20 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   if (config.enrichPostDetails) {
     log.info(`Enriching ${results.length} posts from their own pages`);
+    const enrichedBy = { fetch: 0, page: 0, failed: 0 };
     for (const wrapper of results) {
       // The post page's own (always empty) comments field must not replace
       // the comments fetched above.
       const comments = wrapper.clockworks?.comments ?? null;
       const rawComments = wrapper.raw?.comments;
-      await enrichFromPostPage(page, wrapper, { log, inputValue: query });
+      const source = await enrichFromPostPage(page, wrapper, { log, inputValue: query });
+      enrichedBy[source || 'failed'] += 1;
       if (wrapper.clockworks) wrapper.clockworks.comments = comments;
       if (wrapper.raw && comments) wrapper.raw.comments = rawComments;
+      // Fetches return in well under a second; pace them like a reader would.
+      if (source === 'fetch') await page.waitForTimeout(1000);
     }
+    log.info(`Enriched posts: ${enrichedBy.fetch} via fetch, ${enrichedBy.page} via page visit, ${enrichedBy.failed} failed`);
   }
 
   // Every item carries its author's account snapshot: the job's own profile
@@ -1037,10 +1083,29 @@ Actor.main(async () => {
   // "let the actor guess a region".
   const useProxy = Boolean(config.proxyCountryCode);
 
+  // Attempts currently being scraped (uniqueKey#retryCount) and requests
+  // already pushed. Seen 2026-10-28 (run 8z7ux5bQCgTLhipSY): after one job
+  // failed and was retried, the request queue handed two still-running jobs
+  // out a second time ~3 minutes in, and both copies scraped and pushed -
+  // double items, double proxy traffic. Keyed per attempt so a genuine retry
+  // (retryCount + 1) still runs while the timed-out attempt winds down.
+  const attemptsInFlight = new Set();
+  const jobsDone = new Set();
+
+  // A job's time budget grows with the per-post work it does after the feed:
+  // at 300s flat, 10 of 30 profiles with comments + enrich (30 posts each)
+  // timed out and were redone from scratch, ~25% of the run's cost (run
+  // zAXNrYbxluaP3S5Cg). ~8s per enriched post (fetch, pause, a possible
+  // throttling backoff); ~6s per post's comments, ~20s with replies.
+  const perPostSecs = (config.enrichPostDetails ? 8 : 0)
+    + (config.includeComments ? (config.includeReplies ? 20 : 6) : 0);
+  const requestHandlerTimeoutSecs = Math.min(3600, 300 + perPostSecs * config.maxItems);
+  log.info(`Per-job time limit: ${requestHandlerTimeoutSecs}s`);
+
   // Create crawler
   const crawlerOptions = {
     maxRequestRetries: 3,
-    requestHandlerTimeoutSecs: 300,
+    requestHandlerTimeoutSecs,
     // Modest concurrency ceiling - without this Crawlee's autoscaler tends to
     // sit near 1 on typical actor memory allocations, which is fine for a
     // handful of keyword jobs but far too slow for bulk 'post' mode (each
@@ -1134,6 +1199,11 @@ Actor.main(async () => {
     ],
     async requestHandler({ page, request }) {
       const job = request.userData.job;
+      const attemptKey = `${request.uniqueKey}#${request.retryCount}`;
+      if (jobsDone.has(request.uniqueKey) || attemptsInFlight.has(attemptKey)) {
+        log.warning(`Skipping duplicate ${job.mode} job: "${job.query}" (already running or done)`);
+        return;
+      }
       const currentSession = sessionManager.getCurrent();
 
       // Inject cookies from current session
@@ -1141,8 +1211,17 @@ Actor.main(async () => {
       await context.addCookies(currentSession);
 
       // Scrape the job
+      attemptsInFlight.add(attemptKey);
       try {
         const result = await scrapeQuery(page, { log: Actor.log || logger }, job, config, kvStore);
+
+        // A timed-out attempt keeps running in the background; whichever
+        // attempt finishes first pushes, the other drops its items.
+        if (jobsDone.has(request.uniqueKey)) {
+          log.warning(`Dropping results of a superseded attempt of ${job.mode} job: "${job.query}"`);
+          return;
+        }
+        jobsDone.add(request.uniqueKey);
 
         // Push items to dataset
         let pushed = 0;
@@ -1168,6 +1247,8 @@ Actor.main(async () => {
           }
         }
         throw error;
+      } finally {
+        attemptsInFlight.delete(attemptKey);
       }
     },
     async failedRequestHandler({ request, error }) {
