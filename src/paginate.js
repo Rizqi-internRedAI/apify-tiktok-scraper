@@ -55,6 +55,10 @@ export async function setupPagination(page, options = {}) {
       return { scrollCount, totalItems: initialCount, reason: 'target_reached' };
     }
     lastItemCount = initialCount;
+    if (shouldStop && shouldStop()) {
+      onComplete({ reason: 'scan_limit', scrollCount, totalItems: initialCount });
+      return { scrollCount, totalItems: initialCount, reason: 'scan_limit' };
+    }
   }
 
   while (scrollCount < maxScrolls) {

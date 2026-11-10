@@ -15,7 +15,7 @@
       "editor": "json"
     },
     "basketPostsOnly": {
-      "title": "Basket Posts Only (Profiles)",
+      "title": "Basket Posts Only",
       "type": "boolean",
       "description": "Keep ONLY posts with a TikTok Shop yellow basket (keranjang kuning). Applies to profiles and hashtags/keywords; has no effect on postUrls. Posts without a basket are skipped and do not count toward resultsPerPage, so resultsPerPage is the number of basket posts wanted per profile or keyword. Profiles return the newest basket posts by createTime (pinned posts are only kept when they are among the newest); keywords keep TikTok's order. Stops early after basketScanLimit posts looked at, so a profile or keyword with few basket posts returns fewer than resultsPerPage. Output is otherwise the same. How each job went is saved to the key-value store as BASKET_SCANS. Off by default.",
       "default": false,

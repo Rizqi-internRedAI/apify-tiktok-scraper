@@ -756,6 +756,9 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       if (!collecting) return;
       // Search results can also carry user cards, which are not posts.
       if (basketOnly && !item.clockworks) return;
+      // One TikTok response carries 20-50 posts at once, so the limit has to
+      // be enforced per post, not per scroll.
+      if (basketOnly && basketScan.scanned >= config.basketScanLimit) return;
       if (basketOnly) basketScan.scanned += 1;
       if (!isWithinDateRange(item, config.dateRange)) {
         skippedByDate += 1;
