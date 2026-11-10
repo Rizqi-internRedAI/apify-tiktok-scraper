@@ -46,22 +46,21 @@ const MAX_PINNED_KEPT = 5;
 function buildJobs({ hashtags, searchQueries, profiles, basketPostsOnly, postUrls, mode, queries }) {
   const nonBlank = (arr) => (arr || []).map((s) => String(s ?? '').trim()).filter(Boolean);
 
+  // basketPostsOnly keeps only yellow-basket posts (see scrapeQuery). It
+  // applies to profile and keyword/hashtag jobs, never to postUrls: a post URL
+  // names exactly the post wanted.
+  const basket = basketPostsOnly ? { basketOnly: true } : {};
+
   const jobs = [
-    ...nonBlank(hashtags).map((h) => ({ mode: 'search', query: h.replace(/^#/, '') })),
-    ...nonBlank(searchQueries).map((q) => ({ mode: 'search', query: q })),
-    // basketPostsOnly keeps only yellow-basket posts of the profile feed (see
-    // scrapeQuery); it applies to profile jobs only.
-    ...nonBlank(profiles).map((p) => ({
-      mode: 'profile',
-      query: p.replace(/^@/, ''),
-      ...(basketPostsOnly && { basketOnly: true }),
-    })),
+    ...nonBlank(hashtags).map((h) => ({ mode: 'search', query: h.replace(/^#/, ''), ...basket })),
+    ...nonBlank(searchQueries).map((q) => ({ mode: 'search', query: q, ...basket })),
+    ...nonBlank(profiles).map((p) => ({ mode: 'profile', query: p.replace(/^@/, ''), ...basket })),
     ...nonBlank(postUrls).map((url) => ({ mode: 'post', query: url })),
   ];
 
   if (jobs.length === 0) {
     for (const q of nonBlank(queries)) {
-      jobs.push({ mode: mode || 'search', query: q });
+      jobs.push({ mode: mode || 'search', query: q, ...((mode || 'search') === 'post' ? {} : basket) });
     }
   }
 
@@ -200,6 +199,7 @@ async function parseInput(input) {
     jobs,
     maxItems,
     basketScanLimit,
+    basketPostsOnly: input.basketPostsOnly === true,
     cookies,
     cookiePool,
     sortBy,
@@ -688,12 +688,13 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   let skippedByDate = 0;
   let collecting = true;
 
-  // basketPostsOnly profile jobs: only yellow-basket posts count. Posts without a
-  // basket are dropped before they reach `results`, so they never use up
-  // maxItems. Pinned posts are old and sit at the top of the feed, so they are
-  // kept apart from the target count and the newest maxItems are picked by
-  // createTime once scrolling ends.
-  const basketOnly = job.basketOnly === true;
+  // basketPostsOnly (profile and keyword jobs): only yellow-basket posts
+  // count. Posts without a basket are dropped before they reach `results`, so
+  // they never use up maxItems. On a profile, pinned posts are old and sit at
+  // the top of the feed, so they are kept apart from the target count and the
+  // newest maxItems are picked by createTime once scrolling ends. Keyword
+  // results keep TikTok's own order.
+  const basketOnly = job.basketOnly === true && mode !== 'post';
   const basketScan = { scanned: 0, skippedNoBasket: 0, basketFresh: 0, basketPinned: 0, stopReason: null };
 
   // Build URL
@@ -753,6 +754,8 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       // (enrichPostDetails, author profiles) load TikTok's recommended
       // videos, which must not become results of this job.
       if (!collecting) return;
+      // Search results can also carry user cards, which are not posts.
+      if (basketOnly && !item.clockworks) return;
       if (basketOnly) basketScan.scanned += 1;
       if (!isWithinDateRange(item, config.dateRange)) {
         skippedByDate += 1;
@@ -985,15 +988,16 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   collecting = false;
 
   if (basketOnly) {
-    // Newest first, then cut to maxItems: drops pinned posts older than the
-    // maxItems-th newest basket post.
-    results.sort((a, b) => postCreateTime(b) - postCreateTime(a));
+    // Profile feed: newest first, then cut to maxItems, which drops pinned
+    // posts older than the maxItems-th newest basket post. Keyword results
+    // keep the order TikTok returned them in.
+    if (mode === 'profile') results.sort((a, b) => postCreateTime(b) - postCreateTime(a));
     const keptPinned = results.slice(0, config.maxItems).filter(isPinnedItem).length;
     results.length = Math.min(results.length, config.maxItems);
     basketScan.returned = results.length;
     basketScan.pinnedReturned = keptPinned;
     log.info(
-      `Basket-only @${query}: returned ${results.length} of ${config.maxItems} wanted ` +
+      `Basket-only ${mode} "${query}": returned ${results.length} of ${config.maxItems} wanted ` +
       `(looked at ${basketScan.scanned} posts, ${basketScan.skippedNoBasket} without basket skipped, ` +
       `${keptPinned} pinned kept, stopped: ${basketScan.stopReason || 'n/a'})`
     );
@@ -1128,6 +1132,10 @@ Actor.main(async () => {
       ).map(([m, count]) => `${count} ${m} job(s)`).join(', ');
   log.info(
     `Jobs: ${jobsSummary}, Max Items: ${config.maxItems}` +
+      (config.basketPostsOnly
+        ? `, basket posts only (limit ${config.basketScanLimit} posts looked at per job` +
+          (config.jobs.some((j) => j.mode === 'post') ? '; ignored for postUrls' : '') + ')'
+        : '') +
       (config.downloadSubtitles ? ', subtitles: on' : '') +
       (config.scrapeRelatedSearchWords ? ', related search words: on' : '')
   );
@@ -1319,7 +1327,7 @@ Actor.main(async () => {
         for (const snapshot of result.profiles || []) await saveProfileSnapshot(kvStore, snapshot);
 
         if (result.basketScan) {
-          basketScans.push({ username: job.query, wanted: config.maxItems, ...result.basketScan });
+          basketScans.push({ mode: job.mode, query: job.query, wanted: config.maxItems, ...result.basketScan });
           await kvStore.setValue('BASKET_SCANS', basketScans);
         }
       } catch (error) {

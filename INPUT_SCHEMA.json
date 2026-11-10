@@ -17,14 +17,14 @@
     "basketPostsOnly": {
       "title": "Basket Posts Only (Profiles)",
       "type": "boolean",
-      "description": "Profiles only: keep ONLY posts with a TikTok Shop yellow basket (keranjang kuning). Posts without a basket are skipped and do not count toward resultsPerPage, so resultsPerPage is the number of basket posts wanted per profile. Returns the newest basket posts by createTime (pinned posts are only kept when they are among the newest). Stops early after basketScanLimit feed posts, so an account with few basket posts returns fewer than resultsPerPage. Output is otherwise the same (authorProfile, tiktokShopProducts, enrichPostDetails, comments). How each profile went is saved to the key-value store as BASKET_SCANS. No effect on hashtags or postUrls.",
+      "description": "Keep ONLY posts with a TikTok Shop yellow basket (keranjang kuning). Applies to profiles and hashtags/keywords; has no effect on postUrls. Posts without a basket are skipped and do not count toward resultsPerPage, so resultsPerPage is the number of basket posts wanted per profile or keyword. Profiles return the newest basket posts by createTime (pinned posts are only kept when they are among the newest); keywords keep TikTok's order. Stops early after basketScanLimit posts looked at, so a profile or keyword with few basket posts returns fewer than resultsPerPage. Output is otherwise the same. How each job went is saved to the key-value store as BASKET_SCANS. Off by default.",
       "default": false,
       "editor": "checkbox"
     },
     "basketScanLimit": {
       "title": "Basket Scan Limit",
       "type": "integer",
-      "description": "basketPostsOnly only: the most feed posts (basket or not) to look through per profile before stopping, default 300. Raise it for creators who post few basket posts.",
+      "description": "basketPostsOnly only: the most posts (basket or not) to look through per profile or keyword before stopping, default 300. Raise it for creators or keywords with few basket posts.",
       "minimum": 1,
       "maximum": 2000,
       "editor": "number"
