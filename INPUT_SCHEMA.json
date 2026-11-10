@@ -17,16 +17,17 @@
     "basketPostsOnly": {
       "title": "Basket Posts Only",
       "type": "boolean",
-      "description": "Keep ONLY posts with a TikTok Shop yellow basket (keranjang kuning). Applies to profiles and hashtags/keywords; has no effect on postUrls. Posts without a basket are skipped and do not count toward resultsPerPage, so resultsPerPage is the number of basket posts wanted per profile or keyword. Profiles return the newest basket posts by createTime (pinned posts are only kept when they are among the newest); keywords keep TikTok's order. Stops early after basketScanLimit posts looked at, so a profile or keyword with few basket posts returns fewer than resultsPerPage. Output is otherwise the same. How each job went is saved to the key-value store as BASKET_SCANS. Off by default.",
+      "description": "Keep ONLY posts with a TikTok Shop yellow basket (keranjang kuning). Applies to profiles and hashtags/keywords; has no effect on postUrls. Posts without a basket are skipped and never counted. While this is on, Basket Scan Limit (not resultsPerPage) is how many basket posts to collect per profile or keyword. Profiles return the newest basket posts by createTime (pinned posts are only kept when they are among the newest); keywords keep TikTok's order. Scrolling ends when the limit is reached or the feed runs out, so a profile or keyword with few basket posts returns fewer than the limit. Output is otherwise the same. How each job went is saved to the key-value store as BASKET_SCANS. Off by default.",
       "default": false,
       "editor": "checkbox"
     },
     "basketScanLimit": {
       "title": "Basket Scan Limit",
       "type": "integer",
-      "description": "basketPostsOnly only: the most posts (basket or not) to look through per profile or keyword before stopping, default 300. Raise it for creators or keywords with few basket posts.",
+      "description": "basketPostsOnly only: how many basket posts to collect per profile or keyword, instead of resultsPerPage (which is ignored for those jobs while Basket Posts Only is on). Posts without a basket are not counted. Ignored when Basket Posts Only is off.",
+      "default": 15,
       "minimum": 1,
-      "maximum": 2000,
+      "maximum": 1000,
       "editor": "number"
     },
     "hashtags": {

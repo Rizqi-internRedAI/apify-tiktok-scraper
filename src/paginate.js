@@ -34,8 +34,6 @@ export async function setupPagination(page, options = {}) {
     // stand still while the feed is still moving). Stall detection uses it
     // instead of getCount.
     getActivityCount = null,
-    // Optional: () => boolean - stop right after a scroll when true.
-    shouldStop = null,
   } = options;
 
   let scrollCount = 0;
@@ -55,10 +53,6 @@ export async function setupPagination(page, options = {}) {
       return { scrollCount, totalItems: initialCount, reason: 'target_reached' };
     }
     lastItemCount = initialCount;
-    if (shouldStop && shouldStop()) {
-      onComplete({ reason: 'scan_limit', scrollCount, totalItems: initialCount });
-      return { scrollCount, totalItems: initialCount, reason: 'scan_limit' };
-    }
   }
 
   while (scrollCount < maxScrolls) {
@@ -84,11 +78,6 @@ export async function setupPagination(page, options = {}) {
     if (newCount >= targetCount) {
       onComplete({ reason: 'target_reached', scrollCount, totalItems: newCount });
       return { scrollCount, totalItems: newCount, reason: 'target_reached' };
-    }
-
-    if (shouldStop && shouldStop()) {
-      onComplete({ reason: 'scan_limit', scrollCount, totalItems: newCount });
-      return { scrollCount, totalItems: newCount, reason: 'scan_limit' };
     }
 
     const activity = getActivityCount ? await getActivityCount() : null;

@@ -30,7 +30,7 @@ const logger = {
 
 // Configuration
 const DEFAULT_MAX_ITEMS = 200;
-const DEFAULT_BASKET_SCAN_LIMIT = 300;
+const DEFAULT_BASKET_SCAN_LIMIT = 15;
 // TikTok allows 3 pinned posts per profile; a little headroom in case that grows.
 const MAX_PINNED_KEPT = 5;
 
@@ -149,8 +149,8 @@ async function parseInput(input) {
   });
 
   const maxItems = input.maxItems || input.resultsPerPage || DEFAULT_MAX_ITEMS;
-  // basketPostsOnly only: how many feed posts to look through, basket or not,
-  // before giving up on finding maxItems basket posts.
+  // basketPostsOnly only: how many basket posts to collect per profile or
+  // keyword. It replaces resultsPerPage for those jobs.
   const basketScanLimit = input.basketScanLimit || DEFAULT_BASKET_SCAN_LIMIT;
   // 'None' is clockworks' own "no proxy country" sentinel - treated the same
   // as blank so it doesn't get passed to Apify Proxy as a country code.
@@ -690,11 +690,13 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   // basketPostsOnly (profile and keyword jobs): only yellow-basket posts
   // count. Posts without a basket are dropped before they reach `results`, so
-  // they never use up maxItems. On a profile, pinned posts are old and sit at
-  // the top of the feed, so they are kept apart from the target count and the
-  // newest maxItems are picked by createTime once scrolling ends. Keyword
-  // results keep TikTok's own order.
+  // they never count toward the target. The target is basketScanLimit (not
+  // resultsPerPage) for these jobs. On a profile, pinned posts are old and sit
+  // at the top of the feed, so they are kept apart from the target count and
+  // the newest `wantedItems` are picked by createTime once scrolling ends.
+  // Keyword results keep TikTok's own order.
   const basketOnly = job.basketOnly === true && mode !== 'post';
+  const wantedItems = basketOnly ? config.basketScanLimit : config.maxItems;
   const basketScan = { scanned: 0, skippedNoBasket: 0, basketFresh: 0, basketPinned: 0, stopReason: null };
 
   // Build URL
@@ -756,9 +758,6 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       if (!collecting) return;
       // Search results can also carry user cards, which are not posts.
       if (basketOnly && !item.clockworks) return;
-      // One TikTok response carries 20-50 posts at once, so the limit has to
-      // be enforced per post, not per scroll.
-      if (basketOnly && basketScan.scanned >= config.basketScanLimit) return;
       if (basketOnly) basketScan.scanned += 1;
       if (!isWithinDateRange(item, config.dateRange)) {
         skippedByDate += 1;
@@ -773,7 +772,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
           if (basketScan.basketPinned >= MAX_PINNED_KEPT) return;
           basketScan.basketPinned += 1;
         } else {
-          if (basketScan.basketFresh >= config.maxItems) return;
+          if (basketScan.basketFresh >= wantedItems) return;
           basketScan.basketFresh += 1;
         }
       } else if (results.length >= config.maxItems) {
@@ -965,20 +964,18 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     // Scroll-based pagination: TikTok's own JS loads more pages as we scroll,
     // and the interceptor captures each new API response
     await setupPagination(page, {
-      targetCount: config.maxItems,
+      targetCount: wantedItems,
       stallLimit: 3,
       scrollDelay: 2500,
       // Basket jobs count only non-pinned basket posts toward the target, and
       // judge a stall by posts looked at: a run of non-basket posts adds
-      // nothing to the count but is not the end of the feed.
+      // nothing to the count but is not the end of the feed. Scrolling still
+      // ends at the feed's end or paginate's maxScrolls.
       getCount: basketOnly ? () => basketScan.basketFresh : () => results.length,
-      ...(basketOnly && {
-        getActivityCount: () => basketScan.scanned,
-        shouldStop: () => basketScan.scanned >= config.basketScanLimit,
-      }),
+      ...(basketOnly && { getActivityCount: () => basketScan.scanned }),
       onScroll: (info) => {
         log.info(basketOnly
-          ? `Scroll ${info.scrollCount}: basket=${info.currentCount}/${config.maxItems}, looked at ${basketScan.scanned} posts, skipped ${basketScan.skippedNoBasket} without basket`
+          ? `Scroll ${info.scrollCount}: basket=${info.currentCount}/${wantedItems}, looked at ${basketScan.scanned} posts, skipped ${basketScan.skippedNoBasket} without basket`
           : `Scroll ${info.scrollCount}: captured=${info.currentCount} (${info.itemsGained} new)`);
       },
       onComplete: (result) => {
@@ -991,16 +988,16 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   collecting = false;
 
   if (basketOnly) {
-    // Profile feed: newest first, then cut to maxItems, which drops pinned
-    // posts older than the maxItems-th newest basket post. Keyword results
+    // Profile feed: newest first, then cut to wantedItems, which drops pinned
+    // posts older than the wantedItems-th newest basket post. Keyword results
     // keep the order TikTok returned them in.
     if (mode === 'profile') results.sort((a, b) => postCreateTime(b) - postCreateTime(a));
-    const keptPinned = results.slice(0, config.maxItems).filter(isPinnedItem).length;
-    results.length = Math.min(results.length, config.maxItems);
+    const keptPinned = results.slice(0, wantedItems).filter(isPinnedItem).length;
+    results.length = Math.min(results.length, wantedItems);
     basketScan.returned = results.length;
     basketScan.pinnedReturned = keptPinned;
     log.info(
-      `Basket-only ${mode} "${query}": returned ${results.length} of ${config.maxItems} wanted ` +
+      `Basket-only ${mode} "${query}": returned ${results.length} of ${wantedItems} wanted ` +
       `(looked at ${basketScan.scanned} posts, ${basketScan.skippedNoBasket} without basket skipped, ` +
       `${keptPinned} pinned kept, stopped: ${basketScan.stopReason || 'n/a'})`
     );
@@ -1136,7 +1133,7 @@ Actor.main(async () => {
   log.info(
     `Jobs: ${jobsSummary}, Max Items: ${config.maxItems}` +
       (config.basketPostsOnly
-        ? `, basket posts only (limit ${config.basketScanLimit} posts looked at per job` +
+        ? `, basket posts only (${config.basketScanLimit} basket posts per profile/keyword instead of Max Items` +
           (config.jobs.some((j) => j.mode === 'post') ? '; ignored for postUrls' : '') + ')'
         : '') +
       (config.downloadSubtitles ? ', subtitles: on' : '') +
@@ -1187,12 +1184,15 @@ Actor.main(async () => {
   // throttling backoff); ~6s per post's comments, ~20s with replies.
   const perPostSecs = (config.enrichPostDetails ? 8 : 0)
     + (config.includeComments ? (config.includeReplies ? 20 : 6) : 0);
-  // A basket job scrolls through posts it then discards; ~3s per scroll
-  // (~35 posts each), so budget for the scan limit on top.
-  const basketScanSecs = config.jobs.some((j) => j.basketOnly)
-    ? Math.ceil(config.basketScanLimit / 35) * 4
-    : 0;
-  const requestHandlerTimeoutSecs = Math.min(3600, 300 + basketScanSecs + perPostSecs * config.maxItems);
+  // A basket job scrolls through posts it then discards, at most 50 scrolls
+  // of ~4s, so budget for that on top. Its post count is basketScanLimit.
+  const hasBasketJobs = config.jobs.some((j) => j.basketOnly);
+  const basketScanSecs = hasBasketJobs ? 200 : 0;
+  const postsPerJob = Math.max(
+    config.jobs.some((j) => !j.basketOnly) ? config.maxItems : 0,
+    hasBasketJobs ? config.basketScanLimit : 0
+  );
+  const requestHandlerTimeoutSecs = Math.min(3600, 300 + basketScanSecs + perPostSecs * postsPerJob);
   log.info(`Per-job time limit: ${requestHandlerTimeoutSecs}s`);
 
   // Create crawler
@@ -1330,7 +1330,7 @@ Actor.main(async () => {
         for (const snapshot of result.profiles || []) await saveProfileSnapshot(kvStore, snapshot);
 
         if (result.basketScan) {
-          basketScans.push({ mode: job.mode, query: job.query, wanted: config.maxItems, ...result.basketScan });
+          basketScans.push({ mode: job.mode, query: job.query, wanted: config.basketScanLimit, ...result.basketScan });
           await kvStore.setValue('BASKET_SCANS', basketScans);
         }
       } catch (error) {
