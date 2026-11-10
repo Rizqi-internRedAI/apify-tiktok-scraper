@@ -14,6 +14,21 @@
       "default": [],
       "editor": "json"
     },
+    "basketPostsOnly": {
+      "title": "Basket Posts Only (Profiles)",
+      "type": "boolean",
+      "description": "Profiles only: keep ONLY posts with a TikTok Shop yellow basket (keranjang kuning). Posts without a basket are skipped and do not count toward resultsPerPage, so resultsPerPage is the number of basket posts wanted per profile. Returns the newest basket posts by createTime (pinned posts are only kept when they are among the newest). Stops early after basketScanLimit feed posts, so an account with few basket posts returns fewer than resultsPerPage. Output is otherwise the same (authorProfile, tiktokShopProducts, enrichPostDetails, comments). How each profile went is saved to the key-value store as BASKET_SCANS. No effect on hashtags or postUrls.",
+      "default": false,
+      "editor": "checkbox"
+    },
+    "basketScanLimit": {
+      "title": "Basket Scan Limit",
+      "type": "integer",
+      "description": "basketPostsOnly only: the most feed posts (basket or not) to look through per profile before stopping, default 300. Raise it for creators who post few basket posts.",
+      "minimum": 1,
+      "maximum": 2000,
+      "editor": "number"
+    },
     "hashtags": {
       "title": "Hashtags / Keywords",
       "type": "array",

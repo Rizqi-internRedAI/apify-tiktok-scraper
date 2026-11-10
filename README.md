@@ -26,6 +26,17 @@ a filter:
   latest posts plus the account's own data). Used by `red-pharmatiq-api`'s
   `POST /api/scrape/tiktok/profile`. See
   [Profile analysis data](#profile-analysis-data) below.
+- **`basketPostsOnly`** — a switch for `profiles`: keep only posts with a
+  TikTok Shop yellow basket (keranjang kuning). A post without a basket is
+  skipped and does not count toward `resultsPerPage`, so `resultsPerPage` is
+  the number of basket posts wanted per account. The result is the newest
+  basket posts by `createTime`: pinned posts sit at the top of the feed
+  regardless of age, so they are kept only when they are among the newest.
+  Scrolling stops after `basketScanLimit` feed posts (default 300), so an
+  account with few basket posts returns fewer than `resultsPerPage`. Output
+  is the same as `profiles`; per account, `BASKET_SCANS` in the key-value
+  store records posts looked at, skipped without basket, returned and why it
+  stopped. Enrichment and comments only run on the basket posts kept.
 - **`postUrls`** — direct TikTok post URLs, scraped one-by-one (no
   search/scroll) to refresh a specific post's current metrics. See
   [Scraping by post URL](#scraping-by-post-url-bulk-metric-refresh) below.
@@ -48,6 +59,8 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `profiles` | array | `[]` | Usernames to scrape as profile feeds — latest `resultsPerPage` posts per account, plus an `authorProfile` snapshot |
+| `basketPostsOnly` | boolean | `false` | `profiles` only: keep only yellow-basket posts; `resultsPerPage` then counts basket posts only |
+| `basketScanLimit` | integer | `300` | `basketPostsOnly` only: most feed posts (basket or not) to look through per account |
 | `hashtags` | array | `[]` | Keywords — run as real keyword search (leading `#` stripped), not hashtag OR-match. What `red-pharmatiq-api` sends |
 | `postUrls` | array | `[]` | Direct post URLs to re-scrape individually, one job each — see below |
 | `resultsPerPage` | integer | `150` | Max items scraped per `hashtags`/`profiles` entry (not used by `postUrls` — always exactly 1 per URL) |

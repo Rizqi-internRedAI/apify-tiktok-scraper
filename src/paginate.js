@@ -29,11 +29,19 @@ export async function setupPagination(page, options = {}) {
     // given instant, so relying on it alone let pagination keep scrolling
     // (or stop late) independently of how many items were truly captured.
     getCount = null,
+    // Optional: () => number - how much the feed has delivered in total,
+    // when that differs from getCount (a filter drops items, so getCount can
+    // stand still while the feed is still moving). Stall detection uses it
+    // instead of getCount.
+    getActivityCount = null,
+    // Optional: () => boolean - stop right after a scroll when true.
+    shouldStop = null,
   } = options;
 
   let scrollCount = 0;
   let emptyScrolls = 0;
   let lastItemCount = 0;
+  let lastActivity = getActivityCount ? await getActivityCount() : 0;
   let noNewDataCount = 0;
 
   // A caller-supplied getCount may already be at/above target before the
@@ -74,8 +82,17 @@ export async function setupPagination(page, options = {}) {
       return { scrollCount, totalItems: newCount, reason: 'target_reached' };
     }
 
+    if (shouldStop && shouldStop()) {
+      onComplete({ reason: 'scan_limit', scrollCount, totalItems: newCount });
+      return { scrollCount, totalItems: newCount, reason: 'scan_limit' };
+    }
+
+    const activity = getActivityCount ? await getActivityCount() : null;
+    const feedGained = activity === null ? itemsGained : activity - lastActivity;
+    if (activity !== null) lastActivity = activity;
+
     // Detect stall - no new items loaded
-    if (itemsGained === 0) {
+    if (feedGained === 0) {
       noNewDataCount++;
       emptyScrolls++;
 
