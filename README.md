@@ -78,6 +78,8 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `commentsPerPost` | integer | *(unset, falls back to 20)* | Max comments per post when `includeComments` is on |
 | `commentVideosLimit` | integer | *(unset, falls back to 10)* | How many posts per job get their comments fetched |
 | `enrichPostDetails` | boolean | `false` | Open each post's own page for the page-only fields (`contentCategories`, `locationCreated`, moderation warnings). One extra page load per post |
+| `postCountries` | string[] | `[]` | Keep only posts made in these countries (ISO codes, e.g. `["ID"]`); posts made elsewhere are dropped before the dataset. The country is page-only data, so this also switches on `enrichPostDetails` (one extra fetch per post, ~2 s). Posts outside `dateFrom`/`dateTo` are dropped first, so set a date range to keep it cheap |
+| `keepUnknownPostCountry` | boolean | `true` | With `postCountries`: keep posts whose country could not be read (page fetch failed) instead of dropping them |
 | `includeReplies` | boolean | `false` | With `includeComments`, also fetch the replies under each comment (nested in `comments[].replies`) |
 | `repliesPerComment` | integer | *(unset, falls back to 10)* | Max replies per comment when `includeReplies` is on |
 | `includeAuthorProfiles` | boolean | `false` | Attach each author's `authorProfile` snapshot to search and post-URL items too (profile jobs always have it). One profile fetch per unique author |

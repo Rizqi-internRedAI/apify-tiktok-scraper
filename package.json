@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/main.js",
-    "test": "echo \"No tests yet\" && exit 0"
+    "test": "node --test"
   },
   "dependencies": {
     "apify": "^3.2.6",

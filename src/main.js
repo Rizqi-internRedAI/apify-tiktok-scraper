@@ -18,6 +18,7 @@ import { extractItemFromPage, fetchItemFromPostUrl, normalizeItemFromPageData } 
 import { toSynapseFormatted } from './normalize/synapse.js';
 import { normalizeClockworksItem } from './normalize/clockworks.js';
 import { normalizeClockworksComment } from './normalize/comment.js';
+import { keepByPostCountry, normalizeCountryList } from './postCountry.js';
 import { extractProfileFromPage, normalizeProfileSnapshot, parseProfileHtml } from './normalize/profile.js';
 
 // Local development fallback for logging
@@ -119,7 +120,12 @@ async function parseInput(input) {
   // Open each scraped post's own page to add the fields only that page
   // carries (content categories, post country, moderation warnings). One
   // extra page load per post, so off by default.
-  const enrichPostDetails = input.enrichPostDetails || false;
+  // postCountries keeps only posts made in those countries (ISO codes, e.g.
+  // ["ID"]). The country is page-only data, so setting it also turns the
+  // enrichment on.
+  const postCountries = normalizeCountryList(input.postCountries);
+  const keepUnknownPostCountry = input.keepUnknownPostCountry !== false;
+  const enrichPostDetails = input.enrichPostDetails || postCountries.length > 0;
   // Also fetch the replies under each fetched comment (one extra API call
   // per comment that has replies, more when it has many).
   const includeReplies = input.includeReplies || false;
@@ -210,6 +216,8 @@ async function parseInput(input) {
     commentsPerPost,
     commentVideosLimit,
     enrichPostDetails,
+    postCountries,
+    keepUnknownPostCountry,
     includeReplies,
     repliesPerComment,
     includeAuthorProfiles,
@@ -1072,6 +1080,19 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       if (source === 'fetch') await page.waitForTimeout(1000);
     }
     log.info(`Enriched posts: ${enrichedBy.fetch} via fetch, ${enrichedBy.page} via page visit, ${enrichedBy.failed} failed`);
+
+    // Drop posts made in other countries now that their country is known.
+    if (config.postCountries.length) {
+      const countryOf = (wrapper) => wrapper.clockworks?.locationCreated ?? wrapper.raw?.locationCreated;
+      const kept = results.filter((wrapper) => keepByPostCountry(
+        countryOf(wrapper), config.postCountries, config.keepUnknownPostCountry
+      ));
+      const dropped = results.length - kept.length;
+      const unknown = results.filter((wrapper) => !countryOf(wrapper)).length;
+      results.splice(0, results.length, ...kept);
+      log.info(`Post country filter (${config.postCountries.join('/')}): kept ${kept.length}, dropped ${dropped} made elsewhere`
+        + ` (${unknown} with unknown country ${config.keepUnknownPostCountry ? 'kept' : 'dropped'})`);
+    }
   }
 
   // Every item carries its author's account snapshot: the job's own profile
@@ -1136,6 +1157,7 @@ Actor.main(async () => {
         ? `, basket posts only (${config.basketScanLimit} basket posts per profile/keyword instead of Max Items` +
           (config.jobs.some((j) => j.mode === 'post') ? '; ignored for postUrls' : '') + ')'
         : '') +
+      (config.postCountries.length ? `, only posts made in ${config.postCountries.join('/')}` : '') +
       (config.downloadSubtitles ? ', subtitles: on' : '') +
       (config.scrapeRelatedSearchWords ? ', related search words: on' : '')
   );

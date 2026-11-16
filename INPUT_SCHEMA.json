@@ -157,6 +157,20 @@
       "default": false,
       "editor": "checkbox"
     },
+    "postCountries": {
+      "title": "Only Posts Made In (country codes)",
+      "type": "array",
+      "description": "Keep only posts made in these countries (ISO 3166-1 alpha-2 codes, e.g. ID for Indonesia); posts from anywhere else are dropped before they reach the dataset. TikTok only tells the country on a post's own page, so setting this also turns on 'Enrich Post Details' (one extra page fetch per post, about 2 seconds each). Posts dated outside the date range are dropped first, so combine it with Date From/To to keep the cost down. Leave empty for no filter.",
+      "default": [],
+      "editor": "stringList"
+    },
+    "keepUnknownPostCountry": {
+      "title": "Keep Posts With Unknown Country",
+      "type": "boolean",
+      "description": "With 'Only Posts Made In', a post whose country could not be read (its page failed to load) is kept by default so a throttled page fetch never drops real local posts. Turn off to drop those too.",
+      "default": true,
+      "editor": "checkbox"
+    },
     "includeReplies": {
       "title": "Include Replies",
       "type": "boolean",
