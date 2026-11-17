@@ -164,6 +164,13 @@ export function extractProfileGeo(userInfo, { debug = false } = {}) {
     geo.countryCode = String(geo.region).toUpperCase();
     geo.countrySource = 'region';
   }
-  if (debug) geo.debug = { coordinatePairs: pairs, placeFields: placeFields(userInfo) };
+  if (debug) {
+    geo.debug = {
+      coordinatePairs: pairs,
+      placeFields: placeFields(userInfo),
+      userKeys: Object.keys(user).sort(),
+      userInfoKeys: Object.keys(userInfo || {}).sort(),
+    };
+  }
   return geo;
 }

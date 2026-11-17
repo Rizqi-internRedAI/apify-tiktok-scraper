@@ -19,7 +19,7 @@ import { toSynapseFormatted } from './normalize/synapse.js';
 import { normalizeClockworksItem } from './normalize/clockworks.js';
 import { normalizeClockworksComment } from './normalize/comment.js';
 import { keepByPostCountry, normalizeCountryList } from './postCountry.js';
-import { extractPostGeo } from './geo.js';
+import { extractPostGeo, findCoordinates, placeFields } from './geo.js';
 import { extractProfileFromPage, normalizeProfileSnapshot, parseProfileHtml } from './normalize/profile.js';
 
 // Local development fallback for logging
@@ -651,6 +651,41 @@ async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
   return source;
 }
 
+/**
+ * geoDebug only: open TikTok's page for a tagged place (/location/<poi id>) and
+ * report what its SSR state holds - scope keys, any latitude/longitude pair and
+ * the place-like fields. Research aid to learn whether TikTok exposes coordinates.
+ */
+async function probeLocationPage(page, poiId, log) {
+  const previousUrl = page.url();
+  try {
+    await page.goto(`https://www.tiktok.com/location/${poiId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
+    const scope = await page.evaluate(() => {
+      try {
+        const el = document.querySelector('#__UNIVERSAL_DATA_FOR_REHYDRATION__');
+        return el?.textContent ? JSON.parse(el.textContent).__DEFAULT_SCOPE__ || {} : null;
+      } catch { return null; }
+    });
+    const result = {
+      finalUrl: page.url(),
+      title: await page.title().catch(() => null),
+      hasState: Boolean(scope),
+      scopeKeys: scope ? Object.keys(scope) : [],
+      coordinatePairs: scope ? findCoordinates(scope) : [],
+      placeFields: scope ? placeFields(scope, { limit: 80 }) : {},
+    };
+    return result;
+  } catch (error) {
+    log.warning(`geo probe of location ${poiId} failed: ${error.message}`);
+    return { error: error.message };
+  } finally {
+    if (previousUrl.startsWith('https://www.tiktok.com/')) {
+      await page.goto(previousUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    }
+  }
+}
+
 /** Navigate to a post's page and read its SSR item; null when it has none. */
 async function visitPostPage(page, wrapper, url, log) {
   try {
@@ -1100,6 +1135,15 @@ async function scrapeQuery(page, context, job, config, kvStore) {
         bySource[geo.countrySource || 'none'] = (bySource[geo.countrySource || 'none'] || 0) + 1;
       }
       log.info(`Geo: country source per post ${JSON.stringify(bySource)}`);
+      if (config.geoDebug) {
+        let probed = 0;
+        for (const wrapper of results) {
+          const poiId = wrapper.clockworks?.geo?.poi?.id;
+          if (!poiId || probed >= 3) continue;
+          probed += 1;
+          wrapper.clockworks.geo.debug.locationPage = await probeLocationPage(page, poiId, log);
+        }
+      }
     }
 
     // Drop posts made in other countries now that their country is known.
