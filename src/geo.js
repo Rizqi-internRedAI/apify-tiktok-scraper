@@ -14,8 +14,12 @@
  * @rapideditor/country-coder (border polygons, ISO 3166-1 codes) and the nearest
  * known city with offline-geocode-city. No network call, no API key.
  */
+import { readFileSync } from 'node:fs';
 import * as countryCoder from '@rapideditor/country-coder';
 import { getNearestCity } from 'offline-geocode-city';
+
+// GeoNames country id -> ISO alpha-2 (countryInfo.txt). A tagged place's `countryCode` is a GeoNames id, not an ISO code.
+const GEONAMES_COUNTRIES = JSON.parse(readFileSync(new URL('./geonamesCountries.json', import.meta.url), 'utf8'));
 
 const LAT_KEYS = ['latitude', 'lat', 'poilatitude', 'poi_latitude', 'poilat'];
 const LNG_KEYS = ['longitude', 'lng', 'lon', 'long', 'poilongitude', 'poi_longitude', 'poilng'];
@@ -123,6 +127,7 @@ export function extractPostGeo(raw, { debug = false } = {}) {
         city: poi.city ?? null,
         cityCode: poi.cityCode ?? null,
         countryCode: poi.countryCode ?? null,
+        countryIso: GEONAMES_COUNTRIES[String(poi.countryCode ?? '')] ?? null,
         type: poi.type ?? poi.typeCode ?? null,
       }
       : null,
@@ -136,6 +141,9 @@ export function extractPostGeo(raw, { debug = false } = {}) {
   } else if (geo.locationCreated) {
     geo.countryCode = String(geo.locationCreated).toUpperCase();
     geo.countrySource = 'locationCreated';
+  } else if (geo.poi?.countryIso) {
+    geo.countryCode = geo.poi.countryIso;
+    geo.countrySource = 'poi';
   }
   if (debug) geo.debug = { coordinatePairs: pairs, placeFields: placeFields(raw) };
   return geo;

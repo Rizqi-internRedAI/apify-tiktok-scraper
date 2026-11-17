@@ -42,3 +42,12 @@ test('extractProfileGeo returns the account region', () => {
   assert.equal(geo.countrySource, 'region');
   assert.equal(geo.coordinates, null);
 });
+
+test('a tagged place resolves its GeoNames country id to an ISO code', () => {
+  const geo = extractPostGeo({ poi: { name: 'Cirebon', countryCode: '1643084' } });
+  assert.equal(geo.poi.countryIso, 'ID');
+  assert.equal(geo.countryCode, 'ID');
+  assert.equal(geo.countrySource, 'poi');
+  // the post's own country still wins over the tag
+  assert.equal(extractPostGeo({ locationCreated: 'US', poi: { countryCode: '1643084' } }).countryCode, 'US');
+});
