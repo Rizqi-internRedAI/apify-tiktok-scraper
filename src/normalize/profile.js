@@ -10,6 +10,8 @@
  * cannot be backdated).
  */
 
+import { extractProfileGeo } from '../geo.js';
+
 /**
  * Read the raw webapp.user-detail userInfo off the current profile page.
  * Returns null when the page has no such state (private/banned account,
@@ -41,7 +43,7 @@ function num(value) {
  * profile job (clockworks `authorProfile`) and saved to the run's key-value
  * store (PROFILE_SNAPSHOTS).
  */
-export function normalizeProfileSnapshot(userInfo, { scrapedAt = new Date().toISOString() } = {}) {
+export function normalizeProfileSnapshot(userInfo, { scrapedAt = new Date().toISOString(), geoDebug = false } = {}) {
   if (!userInfo?.user) return null;
   const user = userInfo.user;
   // statsV2 holds exact counts as strings; stats holds rounded numbers.
@@ -59,6 +61,9 @@ export function normalizeProfileSnapshot(userInfo, { scrapedAt = new Date().toIS
     privateAccount: user.privateAccount ?? null,
     isOrganization: user.isOrganization === undefined ? null : Boolean(user.isOrganization),
     language: user.language || null,
+    // Account country (TikTok's `user.region`), plus any coordinates and the place they resolve to.
+    region: user.region || null,
+    geo: extractProfileGeo(userInfo, { debug: geoDebug }),
     accountCreateTime: createTime,
     accountCreateTimeISO: createTime ? new Date(createTime * 1000).toISOString() : null,
     // TikTok seller account / commerce (affiliate-enabled) account flags.

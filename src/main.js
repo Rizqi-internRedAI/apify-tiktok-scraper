@@ -19,6 +19,7 @@ import { toSynapseFormatted } from './normalize/synapse.js';
 import { normalizeClockworksItem } from './normalize/clockworks.js';
 import { normalizeClockworksComment } from './normalize/comment.js';
 import { keepByPostCountry, normalizeCountryList } from './postCountry.js';
+import { extractPostGeo } from './geo.js';
 import { extractProfileFromPage, normalizeProfileSnapshot, parseProfileHtml } from './normalize/profile.js';
 
 // Local development fallback for logging
@@ -125,7 +126,12 @@ async function parseInput(input) {
   // enrichment on.
   const postCountries = normalizeCountryList(input.postCountries);
   const keepUnknownPostCountry = input.keepUnknownPostCountry !== false;
-  const enrichPostDetails = input.enrichPostDetails || postCountries.length > 0;
+  // extractGeo adds a `geo` block to every item (country, coordinates and the
+  // place they resolve to, post tag, author region). It needs the post page
+  // and the author's profile page, so it switches both on.
+  const extractGeo = input.extractGeo === true;
+  const geoDebug = input.geoDebug === true;
+  const enrichPostDetails = input.enrichPostDetails || postCountries.length > 0 || extractGeo;
   // Also fetch the replies under each fetched comment (one extra API call
   // per comment that has replies, more when it has many).
   const includeReplies = input.includeReplies || false;
@@ -133,7 +139,7 @@ async function parseInput(input) {
   // Attach each author's account snapshot (authorProfile) to search and post
   // items too, as profile jobs always do. One profile page fetch per unique
   // author, cached for the whole run.
-  const includeAuthorProfiles = input.includeAuthorProfiles || false;
+  const includeAuthorProfiles = input.includeAuthorProfiles || extractGeo;
   const downloadMedia = input.downloadMedia || false;
   // 'clockworks' is the default, not 'compat': red-pharmatiq-api's payloads
   // never set outputSchema (it's not part of clockworks' own input contract),
@@ -216,6 +222,8 @@ async function parseInput(input) {
     commentsPerPost,
     commentVideosLimit,
     enrichPostDetails,
+    extractGeo,
+    geoDebug,
     postCountries,
     keepUnknownPostCountry,
     includeReplies,
@@ -430,6 +438,8 @@ async function saveProfileSnapshot(kvStore, snapshot) {
 // author who shows up in several jobs or posts is fetched once. null means
 // the fetch failed, so it isn't retried for every post of that author.
 const authorProfileCache = new Map();
+// geoDebug of the run, read by the profile snapshots (set once in main()).
+let geoDebugOn = false;
 
 /**
  * The account snapshot of one author for search/post items. Reads the
@@ -467,7 +477,7 @@ async function getAuthorProfile(page, username, log) {
     }
   }
 
-  const snapshot = normalizeProfileSnapshot(userInfo);
+  const snapshot = normalizeProfileSnapshot(userInfo, { geoDebug: geoDebugOn });
   if (!snapshot) log.warning(`No profile data found for @${username}`);
   authorProfileCache.set(key, snapshot);
   return snapshot;
@@ -912,7 +922,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   // seller flags), stamped with the time it was read.
   let profileSnapshot = null;
   if (mode === 'profile') {
-    profileSnapshot = normalizeProfileSnapshot(await extractProfileFromPage(page));
+    profileSnapshot = normalizeProfileSnapshot(await extractProfileFromPage(page), { geoDebug: geoDebugOn });
     if (profileSnapshot) {
       log.info(
         `Profile @${profileSnapshot.uniqueId}: ${profileSnapshot.followerCount} followers, ` +
@@ -1081,9 +1091,22 @@ async function scrapeQuery(page, context, job, config, kvStore) {
     }
     log.info(`Enriched posts: ${enrichedBy.fetch} via fetch, ${enrichedBy.page} via page visit, ${enrichedBy.failed} failed`);
 
+    if (config.extractGeo) {
+      const bySource = {};
+      for (const wrapper of results) {
+        if (!wrapper.clockworks) continue;
+        const geo = extractPostGeo(wrapper.raw, { debug: config.geoDebug });
+        wrapper.clockworks.geo = geo;
+        bySource[geo.countrySource || 'none'] = (bySource[geo.countrySource || 'none'] || 0) + 1;
+      }
+      log.info(`Geo: country source per post ${JSON.stringify(bySource)}`);
+    }
+
     // Drop posts made in other countries now that their country is known.
     if (config.postCountries.length) {
-      const countryOf = (wrapper) => wrapper.clockworks?.locationCreated ?? wrapper.raw?.locationCreated;
+      // With extractGeo the country comes from the coordinates when the post has them.
+      const countryOf = (wrapper) => wrapper.clockworks?.geo?.countryCode
+        ?? wrapper.clockworks?.locationCreated ?? wrapper.raw?.locationCreated;
       const kept = results.filter((wrapper) => keepByPostCountry(
         countryOf(wrapper), config.postCountries, config.keepUnknownPostCountry
       ));
@@ -1144,6 +1167,7 @@ Actor.main(async () => {
 
   // Parse and validate input
   const config = await parseInput(input);
+  geoDebugOn = config.geoDebug;
   // A bulk 'post' run can carry thousands of jobs - list them individually
   // only for small runs, otherwise just log the count per mode.
   const jobsSummary = config.jobs.length <= 20
