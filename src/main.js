@@ -656,10 +656,11 @@ async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
  * report what its SSR state holds - scope keys, any latitude/longitude pair and
  * the place-like fields. Research aid to learn whether TikTok exposes coordinates.
  */
-async function probeLocationPage(page, poiId, log) {
+async function probeLocationPage(page, poiId, poiName, log) {
   const previousUrl = page.url();
   try {
-    await page.goto(`https://www.tiktok.com/location/${poiId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const slug = String(poiName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    await page.goto(`https://www.tiktok.com/location/${slug ? `${slug}-` : ''}${poiId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
     const scope = await page.evaluate(() => {
       try {
@@ -1141,7 +1142,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
           const poiId = wrapper.clockworks?.geo?.poi?.id;
           if (!poiId || probed >= 3) continue;
           probed += 1;
-          wrapper.clockworks.geo.debug.locationPage = await probeLocationPage(page, poiId, log);
+          wrapper.clockworks.geo.debug.locationPage = await probeLocationPage(page, poiId, wrapper.clockworks.geo.poi.name, log);
         }
       }
     }
