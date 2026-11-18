@@ -485,9 +485,22 @@ let loggedMissingRelatedWordsOnce = false;
  * element whose text mentions a "related / also searched" phrase together
  * with its container's HTML).
  */
-async function dumpRelatedDebug(page, kvStore, query, log) {
+async function dumpRelatedDebug(page, kvStore, query, log, net = { calls: [], raw: [] }) {
   const slug = String(query).replace(/[^a-z0-9]+/gi, '_').slice(0, 40);
   try {
+    // Scroll through the results: the related block may render lazily at the bottom.
+    for (let i = 0; i < 4; i++) {
+      await page.mouse.wheel(0, 2500);
+      await page.waitForTimeout(1500);
+    }
+    const classProbe = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[class*="Related"],[class*="related"],[class*="Suggest"],[class*="suggest"],[class*="AlsoSearch"],[class*="OthersSearch"]'))
+        .slice(0, 15)
+        .map((el) => ({ cls: String(el.className).slice(0, 140), text: (el.textContent || '').trim().slice(0, 300), html: el.outerHTML.slice(0, 1500) }))
+    );
+    await kvStore.setValue(`RELATED_${slug}_classprobe`, classProbe);
+    await kvStore.setValue(`RELATED_${slug}_net`, net.calls);
+    for (let i = 0; i < net.raw.length; i++) await kvStore.setValue(`RELATED_${slug}_raw${i}`, net.raw[i]);
     const probe = await page.evaluate(() => {
       const phrase = /others also searched|also searched|searched for|related|terkait|pencarian lain|orang lain|juga mencari|you may like|mungkin anda suka/i;
       const hits = [];
@@ -747,6 +760,20 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   const url = buildUrl(mode, query, config.sortBy, config.publishedWithin, config.language);
   log.info(`Navigating to: ${url}`);
 
+  // relatedDebug: every /api/ call the search page makes, plus the raw search
+  // payloads, to see whether TikTok sends the related searches over the network.
+  const relatedNet = { calls: [], raw: [] };
+  if (config.relatedDebug) {
+    page.on('response', async (res) => {
+      const u = res.url();
+      if (!u.includes('/api/')) return;
+      relatedNet.calls.push({ url: u.slice(0, 220), status: res.status() });
+      if (u.includes('/api/search/') && relatedNet.raw.length < 3) {
+        try { relatedNet.raw.push(JSON.parse(await res.text())); } catch { /* not JSON */ }
+      }
+    });
+  }
+
   // Diagnostic only for 'post' mode: if /api/item_detail/ turns out to be
   // the wrong endpoint name (unverified live - see normalize/itemDetail.js),
   // this lets us log what TikTok actually called so it's fast to fix.
@@ -961,7 +988,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   let relatedSearchWords = [];
   if (mode === 'search' && config.scrapeRelatedSearchWords) {
-    if (config.relatedDebug) await dumpRelatedDebug(page, kvStore, query, log);
+    if (config.relatedDebug) await dumpRelatedDebug(page, kvStore, query, log, relatedNet);
     relatedSearchWords = await extractRelatedSearchWords(page, log);
     log.info(`Related search words: ${relatedSearchWords.length ? relatedSearchWords.join(', ') : '(none found)'}`);
   }
