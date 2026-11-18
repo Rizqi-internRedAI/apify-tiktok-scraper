@@ -702,7 +702,7 @@ async function probePlacePage(page, slugId, log) {
   const onResponse = async (res) => {
     const u = res.url();
     if (!u.includes('/api/') && !u.includes('/place')) return;
-    const entry = { url: u.slice(0, 200), status: res.status() };
+    const entry = { url: u.slice(0, 200), fullUrl: u.includes('/api/poi/detail/') ? u : undefined, status: res.status() };
     try {
       const body = await res.text();
       entry.bytes = body.length;
@@ -734,8 +734,43 @@ async function probePlacePage(page, slugId, log) {
     }
     const ldJson = await page.evaluate(() => Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((el) => el.textContent.slice(0, 2500)));
     const mapLinks = await page.evaluate(() => Array.from(document.querySelectorAll('a[href*="map"],a[href*="geo:"],a[href*="lat"]')).map((el) => el.href).slice(0, 10));
+    // Try TikTok web endpoints that might carry the place's coordinates, called
+    // from the page so its own request signing applies. Baseline = the page's
+    // own poi/detail query string (device and session params).
+    const detailCall = calls.find((c) => c.url.includes('/api/poi/detail/'));
+    const apiTries = [];
+    if (detailCall) {
+      const base = new URL(detailCall.fullUrl || detailCall.url);
+      const placeId = slugId.split('-').pop();
+      const placeName = decodeURIComponent(slugId.slice(0, slugId.lastIndexOf('-'))).replace(/-/g, ' ');
+      const candidates = [
+        `/api/poi/detail/?poiId=${placeId}`,
+        `/api/poi/search/?keyword=${encodeURIComponent(placeName)}&count=10&offset=0`,
+        `/api/search/poi/full/?keyword=${encodeURIComponent(placeName)}&count=10&offset=0`,
+        `/api/search/poi/?keyword=${encodeURIComponent(placeName)}&count=10&offset=0`,
+        `/api/poi/info/?poiId=${placeId}`,
+        `/api/poi/geo/?poiId=${placeId}`,
+        `/api/poi/nearby/?poiId=${placeId}&count=10`,
+        `/api/poi/map/?poiId=${placeId}`,
+        `/api/place/detail/?placeId=${placeId}`,
+        `/api/discover/poi/?keyword=${encodeURIComponent(placeName)}`,
+      ];
+      for (const cand of candidates) {
+        const u = new URL(cand, 'https://www.tiktok.com');
+        for (const [k, v] of base.searchParams) if (!u.searchParams.has(k) && !['poiId', 'poi_id', 'X-Bogus', '_signature', 'msToken', 'verifyFp'].includes(k)) u.searchParams.set(k, v);
+        const r = await page.evaluate(async (target) => {
+          try {
+            const res = await fetch(target, { credentials: 'include' });
+            const text = await res.text();
+            return { status: res.status, bytes: text.length, head: text.slice(0, 600), hasLatLng: /latitude|longitude|"lat"|"lng"/i.test(text) };
+          } catch (e) { return { error: String(e) }; }
+        }, u.toString());
+        apiTries.push({ path: cand.split('?')[0], ...r });
+      }
+    }
     return {
       finalUrl: page.url(),
+      apiTries,
       htmlBytes: html.length,
       decimals,
       ldJson,
