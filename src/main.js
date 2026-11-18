@@ -534,40 +534,63 @@ async function dumpRelatedDebug(page, kvStore, query, log, net = { calls: [], ra
   }
 }
 
-async function extractRelatedSearchWords(page, log) {
-  const words = await page.evaluate(() => {
-    const selectors = [
-      '[data-e2e="search-common-link"]',
-      '[data-e2e="search-common-list"] a',
-      '[data-e2e="related-search"] a',
-      '[data-e2e="search-common"] a',
-    ];
-    for (const sel of selectors) {
-      const els = document.querySelectorAll(sel);
-      if (els.length) {
-        return Array.from(els)
-          .map((el) => el.textContent?.trim())
-          .filter(Boolean);
-      }
-    }
-    return [];
-  });
+async function extractRelatedSearchWords(page, query, log) {
+  // 1. TikTok's own keyword suggestions for the query: what the search box
+  //    offers while typing (/api/search/general/preview/ -> sug_list). Verified
+  //    live 2026-11-18; these are the only per-keyword suggestions the web
+  //    search page exposes. The "Others also searched for" aside
+  //    (AsideRelatedSearchContainer) is rendered empty on the pages we get.
+  const suggested = await fetchSearchSuggestions(page, query, log);
+  if (suggested.length) return suggested;
 
-  if (!words.length && !loggedMissingRelatedWordsOnce) {
+  // 2. Fallback: chips inside the related-search aside, if TikTok ever fills it.
+  //    NOT the old [data-e2e="search-common-link"] selector: those are the
+  //    hashtag/mention links inside each video caption, i.e. data we already have.
+  const chips = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('aside[class*="RelatedSearch"] a, [data-e2e="related-search"] a'))
+      .map((el) => el.textContent?.trim())
+      .filter(Boolean)
+  );
+  if (!chips.length && !loggedMissingRelatedWordsOnce) {
     loggedMissingRelatedWordsOnce = true;
-    const dataE2eSeen = await page.evaluate(() =>
-      Array.from(new Set(
-        Array.from(document.querySelectorAll('[data-e2e]')).map((el) => el.getAttribute('data-e2e'))
-      )).filter(Boolean).slice(0, 60)
-    );
     log.warning(
-      'scrapeRelatedSearchWords: no "Others also searched for" chips matched any known ' +
-      `selector (see extractRelatedSearchWords in src/main.js). data-e2e attributes seen ` +
-      `on this page: [${dataE2eSeen.join(', ')}]`
+      `scrapeRelatedSearchWords: no search suggestions for "${query}" and the related-search aside is empty ` +
+      '(TikTok sometimes returns none for rare keywords)'
     );
   }
+  return chips;
+}
 
-  return words;
+/**
+ * Type the query into the search box and read the suggestion list TikTok
+ * returns for it. Waits for the response whose user_input_query equals the
+ * full query (typing sends one request per character).
+ */
+async function fetchSearchSuggestions(page, query, log) {
+  const wanted = String(query).trim().toLowerCase();
+  let found = null;
+  const onResponse = async (res) => {
+    if (!res.url().includes('/api/search/general/preview/')) return;
+    try {
+      const json = await res.json();
+      if (String(json.user_input_query || '').trim().toLowerCase() === wanted && Array.isArray(json.sug_list)) found = json;
+    } catch { /* not JSON */ }
+  };
+  page.on('response', onResponse);
+  try {
+    const box = await page.$('[data-e2e="search-user-input"]');
+    if (!box) return [];
+    await box.click();
+    await box.fill('');
+    await box.type(String(query), { delay: 80 });
+    for (let i = 0; i < 16 && !found; i++) await page.waitForTimeout(500);
+    await page.keyboard.press('Escape').catch(() => {});
+  } catch (err) {
+    log.warning(`Search suggestions for "${query}" failed: ${err.message.split('\n')[0]}`);
+  } finally {
+    page.off('response', onResponse);
+  }
+  return (found?.sug_list || []).map((x) => x.content).filter(Boolean);
 }
 
 /**
@@ -989,7 +1012,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   let relatedSearchWords = [];
   if (mode === 'search' && config.scrapeRelatedSearchWords) {
     if (config.relatedDebug) await dumpRelatedDebug(page, kvStore, query, log, relatedNet);
-    relatedSearchWords = await extractRelatedSearchWords(page, log);
+    relatedSearchWords = await extractRelatedSearchWords(page, query, log);
     log.info(`Related search words: ${relatedSearchWords.length ? relatedSearchWords.join(', ') : '(none found)'}`);
   }
 
