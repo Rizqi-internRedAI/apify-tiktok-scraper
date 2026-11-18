@@ -534,13 +534,25 @@ async function dumpRelatedDebug(page, kvStore, query, log, net = { calls: [], ra
   }
 }
 
-async function extractRelatedSearchWords(page, query, log) {
+async function extractRelatedSearchWords(page, query, log, previewResponses = []) {
   // 1. TikTok's own keyword suggestions for the query: what the search box
   //    offers while typing (/api/search/general/preview/ -> sug_list). Verified
   //    live 2026-11-18; these are the only per-keyword suggestions the web
   //    search page exposes. The "Others also searched for" aside
   //    (AsideRelatedSearchContainer) is rendered empty on the pages we get.
-  const suggested = await fetchSearchSuggestions(page, query, log);
+  const wanted = String(query).trim().toLowerCase();
+  const fromPreview = () => {
+    const hit = previewResponses.filter((r) => String(r.user_input_query || '').trim().toLowerCase() === wanted
+      && Array.isArray(r.sug_list) && r.sug_list.length).pop();
+    return hit ? hit.sug_list.map((x) => x.content).filter(Boolean) : [];
+  };
+  // The page usually asks by itself right after loading; give it a moment,
+  // then type the keyword into the box as a fallback.
+  for (let i = 0; i < 6 && !fromPreview().length; i++) await page.waitForTimeout(500);
+  let suggested = fromPreview();
+  if (!suggested.length) suggested = await fetchSearchSuggestions(page, query, log);
+  log.info(`Search suggestions for "${query}": ${suggested.length} (page sent ${previewResponses.length} preview answers: ` +
+    `${previewResponses.map((r) => `"${r.user_input_query}"=${(r.sug_list || []).length}`).join(', ') || 'none'})`);
   if (suggested.length) return suggested;
 
   // 2. Fallback: chips inside the related-search aside, if TikTok ever fills it.
@@ -789,6 +801,15 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   // relatedDebug: every /api/ call the search page makes, plus the raw search
   // payloads, to see whether TikTok sends the related searches over the network.
   const relatedNet = { calls: [], raw: [] };
+  // The search page itself asks for the keyword's suggestions
+  // (/api/search/general/preview/ -> sug_list); keep every answer.
+  const previewResponses = [];
+  if (config.scrapeRelatedSearchWords) {
+    page.on('response', async (res) => {
+      if (!res.url().includes('/api/search/general/preview/')) return;
+      try { previewResponses.push(await res.json()); } catch { /* not JSON */ }
+    });
+  }
   if (config.relatedDebug) {
     page.on('response', async (res) => {
       const u = res.url();
@@ -1015,7 +1036,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   let relatedSearchWords = [];
   if (mode === 'search' && config.scrapeRelatedSearchWords) {
     if (config.relatedDebug) await dumpRelatedDebug(page, kvStore, query, log, relatedNet);
-    relatedSearchWords = await extractRelatedSearchWords(page, query, log);
+    relatedSearchWords = await extractRelatedSearchWords(page, query, log, previewResponses);
     log.info(`Related search words: ${relatedSearchWords.length ? relatedSearchWords.join(', ') : '(none found)'}`);
   }
 
