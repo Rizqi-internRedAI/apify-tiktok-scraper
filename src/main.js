@@ -160,6 +160,7 @@ async function parseInput(input) {
     : null;
   const downloadSubtitles = input.downloadSubtitlesOptions === 'DOWNLOAD_SUBTITLES';
   const scrapeRelatedSearchWords = input.scrapeRelatedSearchWords || false;
+  const relatedDebug = input.relatedDebug || false;
 
   // Validate required fields
   if (!sessionCookies && (!cookiePool || cookiePool.length === 0)) {
@@ -218,6 +219,7 @@ async function parseInput(input) {
     proxyCountryCode,
     downloadSubtitles,
     scrapeRelatedSearchWords,
+    relatedDebug,
   };
 }
 
@@ -477,6 +479,48 @@ let loggedMissingRelatedWordsOnce = false;
  * If none match, logs the data-e2e attributes actually present on the page
  * once per run so it's fast to correct.
  */
+/**
+ * relatedDebug: save what the search page really looks like so the chip
+ * selectors can be written from evidence (page HTML, screenshot, and every
+ * element whose text mentions a "related / also searched" phrase together
+ * with its container's HTML).
+ */
+async function dumpRelatedDebug(page, kvStore, query, log) {
+  const slug = String(query).replace(/[^a-z0-9]+/gi, '_').slice(0, 40);
+  try {
+    const probe = await page.evaluate(() => {
+      const phrase = /others also searched|also searched|searched for|related|terkait|pencarian lain|orang lain|juga mencari|you may like|mungkin anda suka/i;
+      const hits = [];
+      for (const el of document.querySelectorAll('body *')) {
+        const own = Array.from(el.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent.trim()).join(' ').trim();
+        if (own && own.length < 120 && phrase.test(own)) {
+          const box = el.closest('[data-e2e]') || el.parentElement;
+          hits.push({
+            text: own,
+            tag: el.tagName,
+            dataE2e: el.getAttribute('data-e2e'),
+            containerE2e: box?.getAttribute?.('data-e2e') || null,
+            containerHtml: (el.parentElement?.parentElement || el.parentElement || el).outerHTML.slice(0, 4000),
+          });
+        }
+        if (hits.length >= 20) break;
+      }
+      const e2e = {};
+      for (const el of document.querySelectorAll('[data-e2e]')) {
+        const k = el.getAttribute('data-e2e');
+        e2e[k] = (e2e[k] || 0) + 1;
+      }
+      return { url: location.href, lang: document.documentElement.lang, title: document.title, hits, e2e };
+    });
+    await kvStore.setValue(`RELATED_${slug}_probe`, probe);
+    await kvStore.setValue(`RELATED_${slug}_html`, await page.content(), { contentType: 'text/html' });
+    await kvStore.setValue(`RELATED_${slug}_png`, await page.screenshot({ fullPage: true }), { contentType: 'image/png' });
+    log.info(`relatedDebug: saved page dump for "${query}" (${probe.hits.length} phrase hits, ${Object.keys(probe.e2e).length} data-e2e kinds)`);
+  } catch (err) {
+    log.warning(`relatedDebug failed for "${query}": ${err.message}`);
+  }
+}
+
 async function extractRelatedSearchWords(page, log) {
   const words = await page.evaluate(() => {
     const selectors = [
@@ -917,6 +961,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   let relatedSearchWords = [];
   if (mode === 'search' && config.scrapeRelatedSearchWords) {
+    if (config.relatedDebug) await dumpRelatedDebug(page, kvStore, query, log);
     relatedSearchWords = await extractRelatedSearchWords(page, log);
     log.info(`Related search words: ${relatedSearchWords.length ? relatedSearchWords.join(', ') : '(none found)'}`);
   }

@@ -215,6 +215,13 @@
       "description": "Tick to include the keywords TikTok shows in the 'Others also searched for' section on the search results page. The words will be added to every video result from that search job (as videoMeta's sibling field relatedSearchWords). Search mode only (hashtags/searchQueries) - has no effect on profiles/postUrls. Read from the page UI (not a network response), so unverified live - if the diagnostic warning shows up in the run log, the selectors in extractRelatedSearchWords (src/main.js) need updating.",
       "default": false,
       "editor": "checkbox"
+    },
+    "relatedDebug": {
+      "title": "Related search words debug dump",
+      "type": "boolean",
+      "description": "With scrapeRelatedSearchWords: save the search page's HTML, a screenshot and a probe of 'also searched' elements to the key-value store (RELATED_<query>_*). For writing the chip selectors.",
+      "default": false,
+      "editor": "checkbox"
     }
   }
 }
