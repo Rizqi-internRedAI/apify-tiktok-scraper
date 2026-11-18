@@ -722,8 +722,22 @@ async function probePlacePage(page, slugId, log) {
         return el?.textContent ? JSON.parse(el.textContent).__DEFAULT_SCOPE__ || {} : null;
       } catch { return null; }
     });
+    // Coordinates may sit outside the SSR state: structured data, map links, or
+    // any long decimal in the HTML. Report every decimal with 4+ digits and its context.
+    const html = await page.content();
+    const decimals = [];
+    for (const m of html.matchAll(/-?\d{1,3}\.\d{4,}/g)) {
+      decimals.push({ value: m[0], context: html.slice(Math.max(0, m.index - 70), m.index + 40).replace(/\s+/g, ' ') });
+      if (decimals.length >= 25) break;
+    }
+    const ldJson = await page.evaluate(() => Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((el) => el.textContent.slice(0, 2500)));
+    const mapLinks = await page.evaluate(() => Array.from(document.querySelectorAll('a[href*="map"],a[href*="geo:"],a[href*="lat"]')).map((el) => el.href).slice(0, 10));
     return {
       finalUrl: page.url(),
+      htmlBytes: html.length,
+      decimals,
+      ldJson,
+      mapLinks,
       title: await page.title().catch(() => null),
       hasState: Boolean(scope),
       scopeKeys: scope ? Object.keys(scope) : [],
