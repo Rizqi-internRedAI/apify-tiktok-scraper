@@ -91,7 +91,10 @@
     "sortBy": {
       "title": "Sort Order",
       "type": "string",
-      "enum": ["relevance", "latest"],
+      "enum": [
+        "relevance",
+        "latest"
+      ],
       "description": "Sort search results by relevance or latest posts.",
       "default": "relevance",
       "editor": "select"
@@ -99,7 +102,14 @@
     "publishedWithin": {
       "title": "Published Within",
       "type": "string",
-      "enum": ["all", "1d", "7d", "30d", "90d", "180d"],
+      "enum": [
+        "all",
+        "1d",
+        "7d",
+        "30d",
+        "90d",
+        "180d"
+      ],
       "description": "Server-side time filter for search mode: all, 1 day, 7 days, 30 days, 90 days, or 180 days.",
       "default": "all",
       "editor": "select"
@@ -121,8 +131,30 @@
     "language": {
       "title": "Result Language",
       "type": "string",
-      "enum": ["", "id", "en", "ms", "th", "vi", "ja", "ko", "es", "pt"],
-      "enumTitles": ["(none - don't scope by language)", "Indonesian", "English", "Malay", "Thai", "Vietnamese", "Japanese", "Korean", "Spanish", "Portuguese"],
+      "enum": [
+        "",
+        "id",
+        "en",
+        "ms",
+        "th",
+        "vi",
+        "ja",
+        "ko",
+        "es",
+        "pt"
+      ],
+      "enumTitles": [
+        "(none - don't scope by language)",
+        "Indonesian",
+        "English",
+        "Malay",
+        "Thai",
+        "Vietnamese",
+        "Japanese",
+        "Korean",
+        "Spanish",
+        "Portuguese"
+      ],
       "description": "ISO language code used to scope search results (sets the lang URL parameter and the browser locale). Left empty by default - red-pharmatiq-api's own ingestion pipeline already filters to id/en, so this doesn't need to narrow the scrape itself.",
       "default": "",
       "editor": "select"
@@ -189,7 +221,13 @@
     "outputSchema": {
       "title": "Output Schema",
       "type": "string",
-      "enum": ["clockworks", "compat", "native", "both", "synapse-formatted"],
+      "enum": [
+        "clockworks",
+        "compat",
+        "native",
+        "both",
+        "synapse-formatted"
+      ],
       "description": "'clockworks' matches clockworks/tiktok-scraper's field names (default - red-pharmatiq-api's payloads never set this field, so it must work with no explicit opt-in). 'compat' matches the legacy Threads-style schema, 'native' is full TikTok data, 'both' includes all fields. 'synapse-formatted' matches red-synapse-dbs-be's /ingest post shape (platform 'tiktok', video URLs as strings, hashtags as one string, plus a 'tag' field holding the query that produced the post).",
       "default": "clockworks",
       "editor": "select"
@@ -204,7 +242,10 @@
     "downloadSubtitlesOptions": {
       "title": "Download Subtitles",
       "type": "string",
-      "enum": ["NO_SUBTITLES", "DOWNLOAD_SUBTITLES"],
+      "enum": [
+        "NO_SUBTITLES",
+        "DOWNLOAD_SUBTITLES"
+      ],
       "description": "clockworks/tiktok-scraper-compatible field. 'DOWNLOAD_SUBTITLES' downloads TikTok's own closed-caption tracks (when present) and re-hosts them in this run's key-value store so they can be fetched without a TikTok session. Free — does not run paid speech-to-text for videos without subtitles.",
       "default": "NO_SUBTITLES",
       "editor": "select"
@@ -212,7 +253,7 @@
     "scrapeRelatedSearchWords": {
       "title": "Scrape related search words",
       "type": "boolean",
-      "description": "Tick to include the keywords TikTok shows in the 'Others also searched for' section on the search results page. The words will be added to every video result from that search job (as videoMeta's sibling field relatedSearchWords). Search mode only (hashtags/searchQueries) - has no effect on profiles/postUrls. Read from the page UI (not a network response), so unverified live - if the diagnostic warning shows up in the run log, the selectors in extractRelatedSearchWords (src/main.js) need updating.",
+      "description": "Tick to add TikTok's keyword suggestions for the query (what the search box offers while typing, about 8 per keyword) to every video result of that search job as relatedSearchWords. The list belongs to the keyword, so all videos from one job share it. Search mode only (hashtags/searchQueries); no effect on profiles/postUrls. Works without proxy.",
       "default": false,
       "editor": "checkbox"
     },
