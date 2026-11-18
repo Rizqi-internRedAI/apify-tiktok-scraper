@@ -185,6 +185,13 @@
       "default": false,
       "editor": "checkbox"
     },
+    "placeProbe": {
+      "title": "Place probe (debug)",
+      "type": "array",
+      "description": "With Geo Debug: TikTok place pages to open, as Name-ID (e.g. Mitra-Keluarga-Cikarang-42203860492262907). Saves where the place page keeps its coordinates to the key-value store (PLACE_PROBE).",
+      "editor": "stringList",
+      "items": { "type": "string" }
+    },
     "includeReplies": {
       "title": "Include Replies",
       "type": "boolean",

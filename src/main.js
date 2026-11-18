@@ -131,6 +131,7 @@ async function parseInput(input) {
   // and the author's profile page, so it switches both on.
   const extractGeo = input.extractGeo === true;
   const geoDebug = input.geoDebug === true;
+  const placeProbe = Array.isArray(input.placeProbe) ? input.placeProbe.map(String).filter(Boolean) : [];
   const enrichPostDetails = input.enrichPostDetails || postCountries.length > 0 || extractGeo;
   // Also fetch the replies under each fetched comment (one extra API call
   // per comment that has replies, more when it has many).
@@ -224,6 +225,7 @@ async function parseInput(input) {
     enrichPostDetails,
     extractGeo,
     geoDebug,
+    placeProbe,
     postCountries,
     keepUnknownPostCountry,
     includeReplies,
@@ -440,6 +442,7 @@ async function saveProfileSnapshot(kvStore, snapshot) {
 const authorProfileCache = new Map();
 // geoDebug of the run, read by the profile snapshots (set once in main()).
 let geoDebugOn = false;
+let placeProbeDone = false;
 
 /**
  * The account snapshot of one author for search/post items. Reads the
@@ -684,6 +687,54 @@ async function probeLocationPage(page, poiId, poiName, log) {
     if (previousUrl.startsWith('https://www.tiktok.com/')) {
       await page.goto(previousUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     }
+  }
+}
+
+/**
+ * geoDebug + placeProbe only: open TikTok's place page (/place/<Name>-<id>) and
+ * report where its coordinates live (SSR scope keys, any lat/lng pair, and the
+ * /api/ calls the page makes). Research aid for placeCoordinates.
+ */
+async function probePlacePage(page, slugId, log) {
+  const calls = [];
+  const onResponse = async (res) => {
+    const u = res.url();
+    if (!u.includes('/api/') && !u.includes('/place')) return;
+    const entry = { url: u.slice(0, 200), status: res.status() };
+    try {
+      const body = await res.text();
+      entry.bytes = body.length;
+      if (/latitude|longitude|"lat"|"lng"/i.test(body)) {
+        entry.hasLatLng = true;
+        try { entry.coordinatePairs = findCoordinates(JSON.parse(body)).slice(0, 3); } catch { /* not JSON */ }
+      }
+    } catch { /* body gone */ }
+    calls.push(entry);
+  };
+  page.on('response', onResponse);
+  try {
+    await page.goto(`https://www.tiktok.com/place/${slugId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(5000);
+    const scope = await page.evaluate(() => {
+      try {
+        const el = document.querySelector('#__UNIVERSAL_DATA_FOR_REHYDRATION__');
+        return el?.textContent ? JSON.parse(el.textContent).__DEFAULT_SCOPE__ || {} : null;
+      } catch { return null; }
+    });
+    return {
+      finalUrl: page.url(),
+      title: await page.title().catch(() => null),
+      hasState: Boolean(scope),
+      scopeKeys: scope ? Object.keys(scope) : [],
+      coordinatePairs: scope ? findCoordinates(scope) : [],
+      placeScope: scope ? Object.fromEntries(Object.entries(scope).filter(([k]) => /place|poi|location/i.test(k)).map(([k, v]) => [k, JSON.stringify(v).slice(0, 1500)])) : {},
+      calls: calls.filter((c) => c.hasLatLng || /place|poi|location/i.test(c.url)).slice(0, 15),
+    };
+  } catch (error) {
+    log.warning(`place probe of ${slugId} failed: ${error.message}`);
+    return { error: error.message };
+  } finally {
+    page.off('response', onResponse);
   }
 }
 
@@ -953,6 +1004,15 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   }
 
   log.info(`Results after initial load: ${results.length}`);
+
+  if (config.geoDebug && config.placeProbe.length && !placeProbeDone) {
+    placeProbeDone = true;
+    const probes = {};
+    for (const slugId of config.placeProbe) probes[slugId] = await probePlacePage(page, slugId, log);
+    await kvStore.setValue('PLACE_PROBE', probes);
+    log.info(`placeProbe: saved ${Object.keys(probes).length} place probes`);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  }
 
   // Profile jobs: the account's own data (exact follower count, account age,
   // seller flags), stamped with the time it was read.
