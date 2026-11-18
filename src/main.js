@@ -127,8 +127,8 @@ async function parseInput(input) {
   const postCountries = normalizeCountryList(input.postCountries);
   const keepUnknownPostCountry = input.keepUnknownPostCountry !== false;
   // extractGeo adds a `geo` block to every item (country, coordinates and the
-  // place they resolve to, post tag, author region). It needs the post page
-  // and the author's profile page, so it switches both on.
+  // place they resolve to, post tag, author region). It needs the post page, and
+  // the author's profile page for the account region; both switch on.
   const extractGeo = input.extractGeo === true;
   const geoDebug = input.geoDebug === true;
   const placeProbe = Array.isArray(input.placeProbe) ? input.placeProbe.map(String).filter(Boolean) : [];
@@ -140,7 +140,9 @@ async function parseInput(input) {
   // Attach each author's account snapshot (authorProfile) to search and post
   // items too, as profile jobs always do. One profile page fetch per unique
   // author, cached for the whole run.
-  const includeAuthorProfiles = input.includeAuthorProfiles || extractGeo;
+  // extractGeo switches it on unless the input says includeAuthorProfiles: false
+  // (the post's own geo needs no profile page; the account region does).
+  const includeAuthorProfiles = input.includeAuthorProfiles ?? extractGeo;
   const downloadMedia = input.downloadMedia || false;
   // 'clockworks' is the default, not 'compat': red-pharmatiq-api's payloads
   // never set outputSchema (it's not part of clockworks' own input contract),
