@@ -548,9 +548,11 @@ async function extractRelatedSearchWords(page, query, log, previewResponses = []
   };
   // The page usually asks by itself right after loading; give it a moment,
   // then type the keyword into the box as a fallback.
-  for (let i = 0; i < 6 && !fromPreview().length; i++) await page.waitForTimeout(500);
+  for (let i = 0; i < 12 && !fromPreview().length; i++) await page.waitForTimeout(500);
   let suggested = fromPreview();
   if (!suggested.length) suggested = await fetchSearchSuggestions(page, query, log);
+  // an answer can land while the fallback was typing
+  if (!suggested.length) suggested = fromPreview();
   log.info(`Search suggestions for "${query}": ${suggested.length} (page sent ${previewResponses.length} preview answers: ` +
     `${previewResponses.map((r) => `"${r.user_input_query}"=${(r.sug_list || []).length}`).join(', ') || 'none'})`);
   if (suggested.length) return suggested;
