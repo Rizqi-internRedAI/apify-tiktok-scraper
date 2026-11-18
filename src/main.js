@@ -580,9 +580,12 @@ async function fetchSearchSuggestions(page, query, log) {
   try {
     const box = await page.$('[data-e2e="search-user-input"]');
     if (!box) return [];
-    await box.click();
-    await box.fill('');
-    await box.type(String(query), { delay: 80 });
+    // Focus through the DOM: a real click times out when another layer
+    // (cookie banner, side panel) covers the box.
+    await box.evaluate((el) => el.focus());
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    await page.keyboard.type(String(query), { delay: 80 });
     for (let i = 0; i < 16 && !found; i++) await page.waitForTimeout(500);
     await page.keyboard.press('Escape').catch(() => {});
   } catch (err) {
