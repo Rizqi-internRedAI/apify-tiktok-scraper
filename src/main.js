@@ -704,6 +704,7 @@ async function probePlacePage(page, slugId, log) {
     try {
       const body = await res.text();
       entry.bytes = body.length;
+      if (u.includes('/api/poi/detail')) entry.body = body.slice(0, 3000);
       if (/latitude|longitude|"lat"|"lng"/i.test(body)) {
         entry.hasLatLng = true;
         try { entry.coordinatePairs = findCoordinates(JSON.parse(body)).slice(0, 3); } catch { /* not JSON */ }
