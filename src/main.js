@@ -744,7 +744,10 @@ async function probePlacePage(page, slugId, log) {
       const placeId = slugId.split('-').pop();
       const placeName = decodeURIComponent(slugId.slice(0, slugId.lastIndexOf('-'))).replace(/-/g, ' ');
       const candidates = [
-        `/api/poi/detail/?poiId=${placeId}`,
+        `/api/search/general/preview/?keyword=${encodeURIComponent(placeName)}`,
+        `/api/search/general/full/?keyword=${encodeURIComponent(placeName)}&offset=0`,
+        `/api/search/suggest/guide/?keyword=${encodeURIComponent(placeName)}`,
+        `/api/poi/item_list/?poiId=${placeId}&count=1&cursor=0`,
         `/api/poi/search/?keyword=${encodeURIComponent(placeName)}&count=10&offset=0`,
         `/api/search/poi/full/?keyword=${encodeURIComponent(placeName)}&count=10&offset=0`,
         `/api/search/poi/?keyword=${encodeURIComponent(placeName)}&count=10&offset=0`,
@@ -762,7 +765,9 @@ async function probePlacePage(page, slugId, log) {
           try {
             const res = await fetch(target, { credentials: 'include' });
             const text = await res.text();
-            return { status: res.status, bytes: text.length, head: text.slice(0, 600), hasLatLng: /latitude|longitude|"lat"|"lng"/i.test(text) };
+            let keys = null; try { keys = Object.keys(JSON.parse(text)); } catch { /* not JSON */ }
+            const pois = (text.match(/"poi[A-Za-z_]*"/g) || []).slice(0, 8);
+            return { status: res.status, bytes: text.length, keys, pois, head: text.slice(0, 600), hasLatLng: /latitude|longitude|"lat"|"lng"/i.test(text) };
           } catch (e) { return { error: String(e) }; }
         }, u.toString());
         apiTries.push({ path: cand.split('?')[0], ...r });
