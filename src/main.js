@@ -768,8 +768,8 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       const u = res.url();
       if (!u.includes('/api/')) return;
       relatedNet.calls.push({ url: u.slice(0, 220), status: res.status() });
-      if (u.includes('/api/search/') && relatedNet.raw.length < 3) {
-        try { relatedNet.raw.push(JSON.parse(await res.text())); } catch { /* not JSON */ }
+      if (u.includes('/api/search/') && relatedNet.raw.length < 14) {
+        try { relatedNet.raw.push({ url: u.split('?')[0], body: JSON.parse(await res.text()) }); } catch { /* not JSON */ }
       }
     });
   }
