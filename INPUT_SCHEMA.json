@@ -212,7 +212,7 @@
     "scrapeRelatedSearchWords": {
       "title": "Scrape related search words",
       "type": "boolean",
-      "description": "Tick to include the keywords TikTok shows in the 'Others also searched for' section on the search results page. The words will be added to every video result from that search job (as videoMeta's sibling field relatedSearchWords). Search mode only (hashtags/searchQueries) - has no effect on profiles/postUrls. Read from the page UI (not a network response), so unverified live - if the diagnostic warning shows up in the run log, the selectors in extractRelatedSearchWords (src/main.js) need updating.",
+      "description": "Tick to add TikTok's keyword suggestions for the query (what the search box offers while typing, about 8 per keyword) to every video result of that search job as relatedSearchWords. The list belongs to the keyword, so all videos from one job share it. Search mode only (hashtags/searchQueries); no effect on profiles/postUrls. Works without proxy.",
       "default": false,
       "editor": "checkbox"
     },
