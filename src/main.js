@@ -121,6 +121,9 @@ async function parseInput(input) {
   // commentDebug: log every comment page (how many were asked for and returned, has_more, cursor, total) so a gap between TikTok's comment counter and
   // the comments returned can be traced to TikTok or to our paging.
   const commentDebug = input.commentDebug === true;
+  // commentPasses: repeat each post's comment fetch (and re-try reply threads) and merge by comment id, because TikTok does not always return the same
+  // comments for the same request. Default 1 keeps the old single fetch.
+  const commentPasses = Math.max(1, Math.min(10, parseInt(input.commentPasses, 10) || 1));
   // Open each scraped post's own page to add the fields only that page
   // carries (content categories, post country, moderation warnings). One
   // extra page load per post, so off by default.
@@ -229,6 +232,7 @@ async function parseInput(input) {
     commentsPerPost,
     commentVideosLimit,
     commentDebug,
+    commentPasses,
     enrichPostDetails,
     extractGeo,
     geoDebug,
@@ -645,22 +649,31 @@ async function fetchSearchSuggestions(page, query, log) {
  * 200 body (confirmed 2026-10-23, headless and headful, with and without
  * cookies), while the same call made with fetch() from the page returns the
  * comments. Never throws; returns the raw comments.
+ *
+ * TikTok does not return the same comments for the same request every time
+ * (2026-11-20: a second fetch of a post returned every comment of the first
+ * plus 17 more, with the post's counter unchanged). With `passes` > 1 the
+ * fetch is repeated and merged by comment id; it stops after two passes in
+ * a row that add nothing. Reply threads are retried until the number of
+ * replies TikTok announces for the comment (reply_comment_total) is reached.
  */
-async function fetchCommentsInPage(page, awemeId, limit, log, { includeReplies = false, repliesPerComment = 10, debug = false } = {}) {
-  const comments = await fetchCommentPages(page, `/api/comment/list/?aid=1988&aweme_id=${awemeId}`, limit, awemeId, log, debug);
+async function fetchCommentsInPage(page, awemeId, limit, log, { includeReplies = false, repliesPerComment = 10, debug = false, passes = 1 } = {}) {
+  const comments = await fetchMerged(page, `/api/comment/list/?aid=1988&aweme_id=${awemeId}`, limit, awemeId, log, {
+    debug, passes, probeAfterEnd: passes > 1, target: null,
+  });
   if (includeReplies) {
     for (const comment of comments) {
       if (!(comment.reply_comment_total > 0)) {
         comment.replies = [];
         continue;
       }
-      comment.replies = await fetchCommentPages(
+      comment.replies = await fetchMerged(
         page,
         `/api/comment/list/reply/?aid=1988&item_id=${awemeId}&comment_id=${comment.cid}`,
         repliesPerComment,
         `${awemeId}/${comment.cid}`,
         log,
-        debug
+        { debug, passes, probeAfterEnd: false, target: comment.reply_comment_total }
       );
     }
   }
@@ -668,13 +681,43 @@ async function fetchCommentsInPage(page, awemeId, limit, log, { includeReplies =
 }
 
 /**
+ * Run fetchCommentPages up to `passes` times and merge the results by comment
+ * id (first-seen order). Stops early when `target` comments are held, or after
+ * two passes in a row that add no new comment.
+ */
+async function fetchMerged(page, baseUrl, limit, label, log, { debug = false, passes = 1, probeAfterEnd = false, target = null } = {}) {
+  const byId = new Map();
+  let idle = 0;
+  for (let pass = 1; pass <= passes; pass += 1) {
+    const got = await fetchCommentPages(page, baseUrl, limit, label, log, debug, probeAfterEnd);
+    let added = 0;
+    for (const c of got) {
+      if (!byId.has(c.cid)) {
+        byId.set(c.cid, c);
+        added += 1;
+      }
+    }
+    if (passes > 1 && (debug || added > 0 || pass === 1)) {
+      log.info(`commentPasses ${label} pass ${pass}/${passes}: returned ${got.length}, new ${added}, merged ${byId.size}${target ? ` (TikTok announces ${target})` : ''}`);
+    }
+    idle = added === 0 ? idle + 1 : 0;
+    if (byId.size >= limit || (target && byId.size >= target) || idle >= 2) break;
+    if (pass < passes) await page.waitForTimeout(1200);
+  }
+  return [...byId.values()].slice(0, limit);
+}
+
+/**
  * Page through one TikTok comment-list endpoint (a post's top-level comments
  * or one comment's replies - same response shape) with fetch() from inside
- * the page, up to `limit` comments.
+ * the page, up to `limit` comments. With probeAfterEnd, when TikTok says
+ * has_more=0 but hands back a next cursor, one more page is requested at that
+ * cursor (up to 2 times) in case the list continues.
  */
-async function fetchCommentPages(page, baseUrl, limit, label, log, debug = false) {
+async function fetchCommentPages(page, baseUrl, limit, label, log, debug = false, probeAfterEnd = false) {
   const comments = [];
   let cursor = 0;
+  let probesLeft = probeAfterEnd ? 2 : 0;
   for (let call = 0; call < 20 && comments.length < limit; call += 1) {
     const count = Math.min(50, limit - comments.length);
     let data = null;
@@ -698,7 +741,16 @@ async function fetchCommentPages(page, baseUrl, limit, label, log, debug = false
       break;
     }
     comments.push(...data.comments.slice(0, limit - comments.length));
-    if (!data.has_more || data.cursor === undefined || data.cursor === cursor) {
+    const ended = !data.has_more || data.cursor === undefined || data.cursor === cursor;
+    if (ended) {
+      const moved = data.cursor !== undefined && data.cursor !== cursor;
+      if (probesLeft > 0 && moved && data.comments.length > 0) {
+        probesLeft -= 1;
+        if (debug) log.info(`commentDebug ${label}: has_more=0 after ${comments.length} comments, probing the next cursor ${data.cursor}`);
+        cursor = data.cursor;
+        await page.waitForTimeout(800);
+        continue;
+      }
       if (debug) log.info(`commentDebug ${label}: paging stopped after ${comments.length} comments (has_more=${data.has_more}, cursor ${cursor} -> ${data.cursor})`);
       break;
     }
@@ -1351,6 +1403,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
         includeReplies: config.includeReplies,
         repliesPerComment: config.repliesPerComment,
         debug: config.commentDebug,
+        passes: config.commentPasses,
       });
       const authorId = wrapper.raw?.author?.id;
       const comments = rawComments.map((c) => normalizeClockworksComment(c, { authorId }));

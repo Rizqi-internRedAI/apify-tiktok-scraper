@@ -199,6 +199,15 @@
       "default": false,
       "editor": "checkbox"
     },
+    "commentPasses": {
+      "title": "Comment passes",
+      "type": "integer",
+      "description": "With Include Comments on, fetch each post's comments up to this many times and merge by comment id (reply threads are retried until the reply count TikTok announces is reached). TikTok does not always return the same comments for the same request, so a repeat can return comments the first fetch missed. 1 = single fetch (default). Stops early after two passes that add nothing.",
+      "default": 1,
+      "minimum": 1,
+      "maximum": 10,
+      "editor": "number"
+    },
     "includeReplies": {
       "title": "Include Replies",
       "type": "boolean",
