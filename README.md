@@ -89,18 +89,16 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `outputSchema` | string | `clockworks` | Output format: `clockworks` (default), `compat`, `native`, `both`, or `synapse-formatted` |
 | `proxyCountryCode` | string | `""` | The only proxy field this actor uses, and opt-in: empty (or `None`) means **no proxy at all** (Apify Cloud or local alike). Set it (e.g. `ID`) to enable the RESIDENTIAL proxy group for that exit country |
 | `downloadSubtitlesOptions` | string | `NO_SUBTITLES` | clockworks-compatible. `DOWNLOAD_SUBTITLES` fetches TikTok's native closed captions and re-hosts them in this run's key-value store |
-| `scrapeRelatedSearchWords` | boolean | `false` | clockworks-compatible. Adds TikTok's "Others also searched for" keywords to every result (search mode only) — see caveat below |
+| `scrapeRelatedSearchWords` | boolean | `false` | clockworks-compatible. Adds TikTok's keyword suggestions for the query to every result as `relatedSearchWords` (search mode only) — see note below |
+| `relatedDebug` | boolean | `false` | With `scrapeRelatedSearchWords`: saves the search page HTML, screenshot and network calls to the key-value store (`RELATED_<query>_*`) for debugging |
 
-**`scrapeRelatedSearchWords` caveat**: unlike every other field in this
-actor, the related-search chips aren't in any network response — they're
-read straight from the search page's DOM (`extractRelatedSearchWords` in
-`src/main.js`), using a handful of best-known-guess selectors that haven't
-been independently live-verified. If they're wrong, the run log gets a
-`scrapeRelatedSearchWords: no "Others also searched for" chips matched...`
-warning listing the actual `data-e2e` attributes present on the page —
-update the selector list in `extractRelatedSearchWords` from that. When it
-works, the words land on each item's `clockworks` output as
-`relatedSearchWords: string[]`.
+**`scrapeRelatedSearchWords` note**: the words are TikTok's search suggestions for
+the keyword (what the search box offers: `/api/search/general/preview/` ->
+`sug_list`, ~8 per keyword, verified live 2026-11-18, works without proxy). They belong to the
+*keyword*, so every video found by one search job carries the same list. The
+"Others also searched for" aside on the page (`AsideRelatedSearchContainer`) is
+rendered empty, and the old caption-link selector only returned hashtags that are already
+in each caption, so neither is used any more. Rare keywords can come back with an empty list.
 
 ### Cookie Format
 

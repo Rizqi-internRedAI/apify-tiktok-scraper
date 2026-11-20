@@ -175,6 +175,7 @@ async function parseInput(input) {
     : null;
   const downloadSubtitles = input.downloadSubtitlesOptions === 'DOWNLOAD_SUBTITLES';
   const scrapeRelatedSearchWords = input.scrapeRelatedSearchWords || false;
+  const relatedDebug = input.relatedDebug || false;
 
   // Validate required fields
   if (!sessionCookies && (!cookiePool || cookiePool.length === 0)) {
@@ -238,6 +239,7 @@ async function parseInput(input) {
     proxyCountryCode,
     downloadSubtitles,
     scrapeRelatedSearchWords,
+    relatedDebug,
   };
 }
 
@@ -500,40 +502,135 @@ let loggedMissingRelatedWordsOnce = false;
  * If none match, logs the data-e2e attributes actually present on the page
  * once per run so it's fast to correct.
  */
-async function extractRelatedSearchWords(page, log) {
-  const words = await page.evaluate(() => {
-    const selectors = [
-      '[data-e2e="search-common-link"]',
-      '[data-e2e="search-common-list"] a',
-      '[data-e2e="related-search"] a',
-      '[data-e2e="search-common"] a',
-    ];
-    for (const sel of selectors) {
-      const els = document.querySelectorAll(sel);
-      if (els.length) {
-        return Array.from(els)
-          .map((el) => el.textContent?.trim())
-          .filter(Boolean);
-      }
+/**
+ * relatedDebug: save what the search page really looks like so the chip
+ * selectors can be written from evidence (page HTML, screenshot, and every
+ * element whose text mentions a "related / also searched" phrase together
+ * with its container's HTML).
+ */
+async function dumpRelatedDebug(page, kvStore, query, log, net = { calls: [], raw: [] }) {
+  const slug = String(query).replace(/[^a-z0-9]+/gi, '_').slice(0, 40);
+  try {
+    // Scroll through the results: the related block may render lazily at the bottom.
+    for (let i = 0; i < 4; i++) {
+      await page.mouse.wheel(0, 2500);
+      await page.waitForTimeout(1500);
     }
-    return [];
-  });
-
-  if (!words.length && !loggedMissingRelatedWordsOnce) {
-    loggedMissingRelatedWordsOnce = true;
-    const dataE2eSeen = await page.evaluate(() =>
-      Array.from(new Set(
-        Array.from(document.querySelectorAll('[data-e2e]')).map((el) => el.getAttribute('data-e2e'))
-      )).filter(Boolean).slice(0, 60)
+    const classProbe = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[class*="Related"],[class*="related"],[class*="Suggest"],[class*="suggest"],[class*="AlsoSearch"],[class*="OthersSearch"]'))
+        .slice(0, 15)
+        .map((el) => ({ cls: String(el.className).slice(0, 140), text: (el.textContent || '').trim().slice(0, 300), html: el.outerHTML.slice(0, 1500) }))
     );
+    await kvStore.setValue(`RELATED_${slug}_classprobe`, classProbe);
+    await kvStore.setValue(`RELATED_${slug}_net`, net.calls);
+    for (let i = 0; i < net.raw.length; i++) await kvStore.setValue(`RELATED_${slug}_raw${i}`, net.raw[i]);
+    const probe = await page.evaluate(() => {
+      const phrase = /others also searched|also searched|searched for|related|terkait|pencarian lain|orang lain|juga mencari|you may like|mungkin anda suka/i;
+      const hits = [];
+      for (const el of document.querySelectorAll('body *')) {
+        const own = Array.from(el.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent.trim()).join(' ').trim();
+        if (own && own.length < 120 && phrase.test(own)) {
+          const box = el.closest('[data-e2e]') || el.parentElement;
+          hits.push({
+            text: own,
+            tag: el.tagName,
+            dataE2e: el.getAttribute('data-e2e'),
+            containerE2e: box?.getAttribute?.('data-e2e') || null,
+            containerHtml: (el.parentElement?.parentElement || el.parentElement || el).outerHTML.slice(0, 4000),
+          });
+        }
+        if (hits.length >= 20) break;
+      }
+      const e2e = {};
+      for (const el of document.querySelectorAll('[data-e2e]')) {
+        const k = el.getAttribute('data-e2e');
+        e2e[k] = (e2e[k] || 0) + 1;
+      }
+      return { url: location.href, lang: document.documentElement.lang, title: document.title, hits, e2e };
+    });
+    await kvStore.setValue(`RELATED_${slug}_probe`, probe);
+    await kvStore.setValue(`RELATED_${slug}_html`, await page.content(), { contentType: 'text/html' });
+    await kvStore.setValue(`RELATED_${slug}_png`, await page.screenshot({ fullPage: true }), { contentType: 'image/png' });
+    log.info(`relatedDebug: saved page dump for "${query}" (${probe.hits.length} phrase hits, ${Object.keys(probe.e2e).length} data-e2e kinds)`);
+  } catch (err) {
+    log.warning(`relatedDebug failed for "${query}": ${err.message}`);
+  }
+}
+
+async function extractRelatedSearchWords(page, query, log, previewResponses = []) {
+  // 1. TikTok's own keyword suggestions for the query: what the search box
+  //    offers while typing (/api/search/general/preview/ -> sug_list). Verified
+  //    live 2026-11-18; these are the only per-keyword suggestions the web
+  //    search page exposes. The "Others also searched for" aside
+  //    (AsideRelatedSearchContainer) is rendered empty on the pages we get.
+  const wanted = String(query).trim().toLowerCase();
+  const fromPreview = () => {
+    const hit = previewResponses.filter((r) => String(r.user_input_query || '').trim().toLowerCase() === wanted
+      && Array.isArray(r.sug_list) && r.sug_list.length).pop();
+    return hit ? hit.sug_list.map((x) => x.content).filter(Boolean) : [];
+  };
+  // The page usually asks by itself right after loading; give it a moment,
+  // then type the keyword into the box as a fallback.
+  for (let i = 0; i < 12 && !fromPreview().length; i++) await page.waitForTimeout(500);
+  let suggested = fromPreview();
+  if (!suggested.length) suggested = await fetchSearchSuggestions(page, query, log);
+  // an answer can land while the fallback was typing
+  if (!suggested.length) suggested = fromPreview();
+  log.info(`Search suggestions for "${query}": ${suggested.length} (page sent ${previewResponses.length} preview answers: ` +
+    `${previewResponses.map((r) => `"${r.user_input_query}"=${(r.sug_list || []).length}`).join(', ') || 'none'})`);
+  if (suggested.length) return suggested;
+
+  // 2. Fallback: chips inside the related-search aside, if TikTok ever fills it.
+  //    NOT the old [data-e2e="search-common-link"] selector: those are the
+  //    hashtag/mention links inside each video caption, i.e. data we already have.
+  const chips = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('aside[class*="RelatedSearch"] a, [data-e2e="related-search"] a'))
+      .map((el) => el.textContent?.trim())
+      .filter(Boolean)
+  );
+  if (!chips.length && !loggedMissingRelatedWordsOnce) {
+    loggedMissingRelatedWordsOnce = true;
     log.warning(
-      'scrapeRelatedSearchWords: no "Others also searched for" chips matched any known ' +
-      `selector (see extractRelatedSearchWords in src/main.js). data-e2e attributes seen ` +
-      `on this page: [${dataE2eSeen.join(', ')}]`
+      `scrapeRelatedSearchWords: no search suggestions for "${query}" and the related-search aside is empty ` +
+      '(TikTok sometimes returns none for rare keywords)'
     );
   }
+  return chips;
+}
 
-  return words;
+/**
+ * Type the query into the search box and read the suggestion list TikTok
+ * returns for it. Waits for the response whose user_input_query equals the
+ * full query (typing sends one request per character).
+ */
+async function fetchSearchSuggestions(page, query, log) {
+  const wanted = String(query).trim().toLowerCase();
+  let found = null;
+  const onResponse = async (res) => {
+    if (!res.url().includes('/api/search/general/preview/')) return;
+    try {
+      const json = await res.json();
+      if (String(json.user_input_query || '').trim().toLowerCase() === wanted && Array.isArray(json.sug_list)) found = json;
+    } catch { /* not JSON */ }
+  };
+  page.on('response', onResponse);
+  try {
+    const box = await page.$('[data-e2e="search-user-input"]');
+    if (!box) return [];
+    // Focus through the DOM: a real click times out when another layer
+    // (cookie banner, side panel) covers the box.
+    await box.evaluate((el) => el.focus());
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    await page.keyboard.type(String(query), { delay: 80 });
+    for (let i = 0; i < 16 && !found; i++) await page.waitForTimeout(500);
+    await page.keyboard.press('Escape').catch(() => {});
+  } catch (err) {
+    log.warning(`Search suggestions for "${query}" failed: ${err.message.split('\n')[0]}`);
+  } finally {
+    page.off('response', onResponse);
+  }
+  return (found?.sug_list || []).map((x) => x.content).filter(Boolean);
 }
 
 /**
@@ -865,6 +962,29 @@ async function scrapeQuery(page, context, job, config, kvStore) {
   const url = buildUrl(mode, query, config.sortBy, config.publishedWithin, config.language);
   log.info(`Navigating to: ${url}`);
 
+  // relatedDebug: every /api/ call the search page makes, plus the raw search
+  // payloads, to see whether TikTok sends the related searches over the network.
+  const relatedNet = { calls: [], raw: [] };
+  // The search page itself asks for the keyword's suggestions
+  // (/api/search/general/preview/ -> sug_list); keep every answer.
+  const previewResponses = [];
+  if (config.scrapeRelatedSearchWords) {
+    page.on('response', async (res) => {
+      if (!res.url().includes('/api/search/general/preview/')) return;
+      try { previewResponses.push(await res.json()); } catch { /* not JSON */ }
+    });
+  }
+  if (config.relatedDebug) {
+    page.on('response', async (res) => {
+      const u = res.url();
+      if (!u.includes('/api/')) return;
+      relatedNet.calls.push({ url: u.slice(0, 220), status: res.status() });
+      if (u.includes('/api/search/') && relatedNet.raw.length < 14) {
+        try { relatedNet.raw.push({ url: u.split('?')[0], body: JSON.parse(await res.text()) }); } catch { /* not JSON */ }
+      }
+    });
+  }
+
   // Diagnostic only for 'post' mode: if /api/item_detail/ turns out to be
   // the wrong endpoint name (unverified live - see normalize/itemDetail.js),
   // this lets us log what TikTok actually called so it's fast to fix.
@@ -1088,7 +1208,8 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   let relatedSearchWords = [];
   if (mode === 'search' && config.scrapeRelatedSearchWords) {
-    relatedSearchWords = await extractRelatedSearchWords(page, log);
+    if (config.relatedDebug) await dumpRelatedDebug(page, kvStore, query, log, relatedNet);
+    relatedSearchWords = await extractRelatedSearchWords(page, query, log, previewResponses);
     log.info(`Related search words: ${relatedSearchWords.length ? relatedSearchWords.join(', ') : '(none found)'}`);
   }
 
