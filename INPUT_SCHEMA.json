@@ -192,6 +192,13 @@
       "editor": "stringList",
       "items": { "type": "string" }
     },
+    "commentDebug": {
+      "title": "Comment paging log",
+      "type": "boolean",
+      "description": "Debug: log every comment page (how many comments were asked for and returned, has_more, cursor, TikTok's total) and why paging stopped. Use it to find out why fewer comments are returned than TikTok's comment counter shows.",
+      "default": false,
+      "editor": "checkbox"
+    },
     "includeReplies": {
       "title": "Include Replies",
       "type": "boolean",

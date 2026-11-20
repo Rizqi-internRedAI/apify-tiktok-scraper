@@ -118,6 +118,9 @@ async function parseInput(input) {
   // How many of a job's posts get their comments fetched (a few API calls
   // each, no extra page load). Unset keeps the old cap of 10.
   const commentVideosLimit = input.commentVideosLimit || 10;
+  // commentDebug: log every comment page (how many were asked for and returned, has_more, cursor, total) so a gap between TikTok's comment counter and
+  // the comments returned can be traced to TikTok or to our paging.
+  const commentDebug = input.commentDebug === true;
   // Open each scraped post's own page to add the fields only that page
   // carries (content categories, post country, moderation warnings). One
   // extra page load per post, so off by default.
@@ -225,6 +228,7 @@ async function parseInput(input) {
     includeComments,
     commentsPerPost,
     commentVideosLimit,
+    commentDebug,
     enrichPostDetails,
     extractGeo,
     geoDebug,
@@ -642,8 +646,8 @@ async function fetchSearchSuggestions(page, query, log) {
  * cookies), while the same call made with fetch() from the page returns the
  * comments. Never throws; returns the raw comments.
  */
-async function fetchCommentsInPage(page, awemeId, limit, log, { includeReplies = false, repliesPerComment = 10 } = {}) {
-  const comments = await fetchCommentPages(page, `/api/comment/list/?aid=1988&aweme_id=${awemeId}`, limit, awemeId, log);
+async function fetchCommentsInPage(page, awemeId, limit, log, { includeReplies = false, repliesPerComment = 10, debug = false } = {}) {
+  const comments = await fetchCommentPages(page, `/api/comment/list/?aid=1988&aweme_id=${awemeId}`, limit, awemeId, log, debug);
   if (includeReplies) {
     for (const comment of comments) {
       if (!(comment.reply_comment_total > 0)) {
@@ -655,7 +659,8 @@ async function fetchCommentsInPage(page, awemeId, limit, log, { includeReplies =
         `/api/comment/list/reply/?aid=1988&item_id=${awemeId}&comment_id=${comment.cid}`,
         repliesPerComment,
         `${awemeId}/${comment.cid}`,
-        log
+        log,
+        debug
       );
     }
   }
@@ -667,7 +672,7 @@ async function fetchCommentsInPage(page, awemeId, limit, log, { includeReplies =
  * or one comment's replies - same response shape) with fetch() from inside
  * the page, up to `limit` comments.
  */
-async function fetchCommentPages(page, baseUrl, limit, label, log) {
+async function fetchCommentPages(page, baseUrl, limit, label, log, debug = false) {
   const comments = [];
   let cursor = 0;
   for (let call = 0; call < 20 && comments.length < limit; call += 1) {
@@ -683,12 +688,20 @@ async function fetchCommentPages(page, baseUrl, limit, label, log) {
       log.warning(`Comment fetch failed for ${label}: ${error.message}`);
       break;
     }
+    if (debug) {
+      log.info(`commentDebug ${label} call ${call + 1}: asked ${count} at cursor ${cursor}, got ${data && Array.isArray(data.comments) ? data.comments.length : 'no list'}, `
+        + `has_more=${data?.has_more}, next cursor=${data?.cursor}, total=${data?.total}, status_code=${data?.status_code}`);
+    }
     if (!data || !Array.isArray(data.comments)) {
       if (call === 0) log.warning(`No comment data returned for ${label} (empty or blocked response)`);
+      else if (debug) log.info(`commentDebug ${label}: paging stopped at call ${call + 1} because the response had no comment list`);
       break;
     }
     comments.push(...data.comments.slice(0, limit - comments.length));
-    if (!data.has_more || data.cursor === undefined || data.cursor === cursor) break;
+    if (!data.has_more || data.cursor === undefined || data.cursor === cursor) {
+      if (debug) log.info(`commentDebug ${label}: paging stopped after ${comments.length} comments (has_more=${data.has_more}, cursor ${cursor} -> ${data.cursor})`);
+      break;
+    }
     cursor = data.cursor;
     await page.waitForTimeout(800);
   }
@@ -1337,6 +1350,7 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       const rawComments = await fetchCommentsInPage(page, wrapper.id, config.commentsPerPost, log, {
         includeReplies: config.includeReplies,
         repliesPerComment: config.repliesPerComment,
+        debug: config.commentDebug,
       });
       const authorId = wrapper.raw?.author?.id;
       const comments = rawComments.map((c) => normalizeClockworksComment(c, { authorId }));
