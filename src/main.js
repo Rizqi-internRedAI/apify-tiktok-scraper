@@ -18,6 +18,8 @@ import { extractItemFromPage, fetchItemFromPostUrl, normalizeItemFromPageData } 
 import { toSynapseFormatted } from './normalize/synapse.js';
 import { normalizeClockworksItem } from './normalize/clockworks.js';
 import { normalizeClockworksComment } from './normalize/comment.js';
+import { keepByPostCountry, normalizeCountryList } from './postCountry.js';
+import { extractPostGeo, findCoordinates, placeFields } from './geo.js';
 import { extractProfileFromPage, normalizeProfileSnapshot, parseProfileHtml } from './normalize/profile.js';
 
 // Local development fallback for logging
@@ -119,7 +121,18 @@ async function parseInput(input) {
   // Open each scraped post's own page to add the fields only that page
   // carries (content categories, post country, moderation warnings). One
   // extra page load per post, so off by default.
-  const enrichPostDetails = input.enrichPostDetails || false;
+  // postCountries keeps only posts made in those countries (ISO codes, e.g.
+  // ["ID"]). The country is page-only data, so setting it also turns the
+  // enrichment on.
+  const postCountries = normalizeCountryList(input.postCountries);
+  const keepUnknownPostCountry = input.keepUnknownPostCountry !== false;
+  // extractGeo adds a `geo` block to every item (country, coordinates and the
+  // place they resolve to, post tag, author region). It needs the post page, and
+  // the author's profile page for the account region; both switch on.
+  const extractGeo = input.extractGeo === true;
+  const geoDebug = input.geoDebug === true;
+  const placeProbe = Array.isArray(input.placeProbe) ? input.placeProbe.map(String).filter(Boolean) : [];
+  const enrichPostDetails = input.enrichPostDetails || postCountries.length > 0 || extractGeo;
   // Also fetch the replies under each fetched comment (one extra API call
   // per comment that has replies, more when it has many).
   const includeReplies = input.includeReplies || false;
@@ -127,7 +140,9 @@ async function parseInput(input) {
   // Attach each author's account snapshot (authorProfile) to search and post
   // items too, as profile jobs always do. One profile page fetch per unique
   // author, cached for the whole run.
-  const includeAuthorProfiles = input.includeAuthorProfiles || false;
+  // extractGeo switches it on unless the input says includeAuthorProfiles: false
+  // (the post's own geo needs no profile page; the account region does).
+  const includeAuthorProfiles = input.includeAuthorProfiles ?? extractGeo;
   const downloadMedia = input.downloadMedia || false;
   // 'clockworks' is the default, not 'compat': red-pharmatiq-api's payloads
   // never set outputSchema (it's not part of clockworks' own input contract),
@@ -210,6 +225,11 @@ async function parseInput(input) {
     commentsPerPost,
     commentVideosLimit,
     enrichPostDetails,
+    extractGeo,
+    geoDebug,
+    placeProbe,
+    postCountries,
+    keepUnknownPostCountry,
     includeReplies,
     repliesPerComment,
     includeAuthorProfiles,
@@ -422,6 +442,9 @@ async function saveProfileSnapshot(kvStore, snapshot) {
 // author who shows up in several jobs or posts is fetched once. null means
 // the fetch failed, so it isn't retried for every post of that author.
 const authorProfileCache = new Map();
+// geoDebug of the run, read by the profile snapshots (set once in main()).
+let geoDebugOn = false;
+let placeProbeDone = false;
 
 /**
  * The account snapshot of one author for search/post items. Reads the
@@ -459,7 +482,7 @@ async function getAuthorProfile(page, username, log) {
     }
   }
 
-  const snapshot = normalizeProfileSnapshot(userInfo);
+  const snapshot = normalizeProfileSnapshot(userInfo, { geoDebug: geoDebugOn });
   if (!snapshot) log.warning(`No profile data found for @${username}`);
   authorProfileCache.set(key, snapshot);
   return snapshot;
@@ -631,6 +654,145 @@ async function enrichFromPostPage(page, wrapper, { log, inputValue }) {
     wrapper.clockworks.relatedSearchWords = previous.relatedSearchWords;
   }
   return source;
+}
+
+/**
+ * geoDebug only: open TikTok's page for a tagged place (/location/<poi id>) and
+ * report what its SSR state holds - scope keys, any latitude/longitude pair and
+ * the place-like fields. Research aid to learn whether TikTok exposes coordinates.
+ */
+async function probeLocationPage(page, poiId, poiName, log) {
+  const previousUrl = page.url();
+  try {
+    const slug = String(poiName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    await page.goto(`https://www.tiktok.com/location/${slug ? `${slug}-` : ''}${poiId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
+    const scope = await page.evaluate(() => {
+      try {
+        const el = document.querySelector('#__UNIVERSAL_DATA_FOR_REHYDRATION__');
+        return el?.textContent ? JSON.parse(el.textContent).__DEFAULT_SCOPE__ || {} : null;
+      } catch { return null; }
+    });
+    const result = {
+      finalUrl: page.url(),
+      title: await page.title().catch(() => null),
+      hasState: Boolean(scope),
+      scopeKeys: scope ? Object.keys(scope) : [],
+      coordinatePairs: scope ? findCoordinates(scope) : [],
+      placeFields: scope ? placeFields(scope, { limit: 80 }) : {},
+    };
+    return result;
+  } catch (error) {
+    log.warning(`geo probe of location ${poiId} failed: ${error.message}`);
+    return { error: error.message };
+  } finally {
+    if (previousUrl.startsWith('https://www.tiktok.com/')) {
+      await page.goto(previousUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    }
+  }
+}
+
+/**
+ * geoDebug + placeProbe only: open TikTok's place page (/place/<Name>-<id>) and
+ * report where its coordinates live (SSR scope keys, any lat/lng pair, and the
+ * /api/ calls the page makes). Research aid for placeCoordinates.
+ */
+async function probePlacePage(page, slugId, log) {
+  const calls = [];
+  const onResponse = async (res) => {
+    const u = res.url();
+    if (!u.includes('/api/') && !u.includes('/place')) return;
+    const entry = { url: u.slice(0, 200), fullUrl: u.includes('/api/poi/detail/') ? u : undefined, status: res.status() };
+    try {
+      const body = await res.text();
+      entry.bytes = body.length;
+      if (u.includes('/api/poi/detail')) entry.body = body.slice(0, 3000);
+      if (/latitude|longitude|"lat"|"lng"/i.test(body)) {
+        entry.hasLatLng = true;
+        try { entry.coordinatePairs = findCoordinates(JSON.parse(body)).slice(0, 3); } catch { /* not JSON */ }
+      }
+    } catch { /* body gone */ }
+    calls.push(entry);
+  };
+  page.on('response', onResponse);
+  try {
+    await page.goto(`https://www.tiktok.com/place/${slugId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(5000);
+    const scope = await page.evaluate(() => {
+      try {
+        const el = document.querySelector('#__UNIVERSAL_DATA_FOR_REHYDRATION__');
+        return el?.textContent ? JSON.parse(el.textContent).__DEFAULT_SCOPE__ || {} : null;
+      } catch { return null; }
+    });
+    // Coordinates may sit outside the SSR state: structured data, map links, or
+    // any long decimal in the HTML. Report every decimal with 4+ digits and its context.
+    const html = await page.content();
+    const decimals = [];
+    for (const m of html.matchAll(/-?\d{1,3}\.\d{4,}/g)) {
+      decimals.push({ value: m[0], context: html.slice(Math.max(0, m.index - 70), m.index + 40).replace(/\s+/g, ' ') });
+      if (decimals.length >= 25) break;
+    }
+    const ldJson = await page.evaluate(() => Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((el) => el.textContent.slice(0, 2500)));
+    const mapLinks = await page.evaluate(() => Array.from(document.querySelectorAll('a[href*="map"],a[href*="geo:"],a[href*="lat"]')).map((el) => el.href).slice(0, 10));
+    // Try TikTok web endpoints that might carry the place's coordinates, called
+    // from the page so its own request signing applies. Baseline = the page's
+    // own poi/detail query string (device and session params).
+    const detailCall = calls.find((c) => c.url.includes('/api/poi/detail/'));
+    const apiTries = [];
+    if (detailCall) {
+      const base = new URL(detailCall.fullUrl || detailCall.url);
+      const placeId = slugId.split('-').pop();
+      const placeName = decodeURIComponent(slugId.slice(0, slugId.lastIndexOf('-'))).replace(/-/g, ' ');
+      const candidates = [
+        `/api/search/general/preview/?keyword=${encodeURIComponent(placeName)}`,
+        `/api/search/general/full/?keyword=${encodeURIComponent(placeName)}&offset=0`,
+        `/api/search/suggest/guide/?keyword=${encodeURIComponent(placeName)}`,
+        `/api/poi/item_list/?poiId=${placeId}&count=1&cursor=0`,
+        `/api/poi/search/?keyword=${encodeURIComponent(placeName)}&count=10&offset=0`,
+        `/api/search/poi/full/?keyword=${encodeURIComponent(placeName)}&count=10&offset=0`,
+        `/api/search/poi/?keyword=${encodeURIComponent(placeName)}&count=10&offset=0`,
+        `/api/poi/info/?poiId=${placeId}`,
+        `/api/poi/geo/?poiId=${placeId}`,
+        `/api/poi/nearby/?poiId=${placeId}&count=10`,
+        `/api/poi/map/?poiId=${placeId}`,
+        `/api/place/detail/?placeId=${placeId}`,
+        `/api/discover/poi/?keyword=${encodeURIComponent(placeName)}`,
+      ];
+      for (const cand of candidates) {
+        const u = new URL(cand, 'https://www.tiktok.com');
+        for (const [k, v] of base.searchParams) if (!u.searchParams.has(k) && !['poiId', 'poi_id', 'X-Bogus', '_signature', 'msToken', 'verifyFp'].includes(k)) u.searchParams.set(k, v);
+        const r = await page.evaluate(async (target) => {
+          try {
+            const res = await fetch(target, { credentials: 'include' });
+            const text = await res.text();
+            let keys = null; try { keys = Object.keys(JSON.parse(text)); } catch { /* not JSON */ }
+            const pois = (text.match(/"poi[A-Za-z_]*"/g) || []).slice(0, 8);
+            return { status: res.status, bytes: text.length, keys, pois, head: text.slice(0, 600), hasLatLng: /latitude|longitude|"lat"|"lng"/i.test(text) };
+          } catch (e) { return { error: String(e) }; }
+        }, u.toString());
+        apiTries.push({ path: cand.split('?')[0], ...r });
+      }
+    }
+    return {
+      finalUrl: page.url(),
+      apiTries,
+      htmlBytes: html.length,
+      decimals,
+      ldJson,
+      mapLinks,
+      title: await page.title().catch(() => null),
+      hasState: Boolean(scope),
+      scopeKeys: scope ? Object.keys(scope) : [],
+      coordinatePairs: scope ? findCoordinates(scope) : [],
+      placeScope: scope ? Object.fromEntries(Object.entries(scope).filter(([k]) => /place|poi|location/i.test(k)).map(([k, v]) => [k, JSON.stringify(v).slice(0, 1500)])) : {},
+      calls: calls.filter((c) => c.hasLatLng || /place|poi|location/i.test(c.url)).slice(0, 15),
+    };
+  } catch (error) {
+    log.warning(`place probe of ${slugId} failed: ${error.message}`);
+    return { error: error.message };
+  } finally {
+    page.off('response', onResponse);
+  }
 }
 
 /** Navigate to a post's page and read its SSR item; null when it has none. */
@@ -900,11 +1062,20 @@ async function scrapeQuery(page, context, job, config, kvStore) {
 
   log.info(`Results after initial load: ${results.length}`);
 
+  if (config.geoDebug && config.placeProbe.length && !placeProbeDone) {
+    placeProbeDone = true;
+    const probes = {};
+    for (const slugId of config.placeProbe) probes[slugId] = await probePlacePage(page, slugId, log);
+    await kvStore.setValue('PLACE_PROBE', probes);
+    log.info(`placeProbe: saved ${Object.keys(probes).length} place probes`);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  }
+
   // Profile jobs: the account's own data (exact follower count, account age,
   // seller flags), stamped with the time it was read.
   let profileSnapshot = null;
   if (mode === 'profile') {
-    profileSnapshot = normalizeProfileSnapshot(await extractProfileFromPage(page));
+    profileSnapshot = normalizeProfileSnapshot(await extractProfileFromPage(page), { geoDebug: geoDebugOn });
     if (profileSnapshot) {
       log.info(
         `Profile @${profileSnapshot.uniqueId}: ${profileSnapshot.followerCount} followers, ` +
@@ -1072,6 +1243,41 @@ async function scrapeQuery(page, context, job, config, kvStore) {
       if (source === 'fetch') await page.waitForTimeout(1000);
     }
     log.info(`Enriched posts: ${enrichedBy.fetch} via fetch, ${enrichedBy.page} via page visit, ${enrichedBy.failed} failed`);
+
+    if (config.extractGeo) {
+      const bySource = {};
+      for (const wrapper of results) {
+        if (!wrapper.clockworks) continue;
+        const geo = extractPostGeo(wrapper.raw, { debug: config.geoDebug });
+        wrapper.clockworks.geo = geo;
+        bySource[geo.countrySource || 'none'] = (bySource[geo.countrySource || 'none'] || 0) + 1;
+      }
+      log.info(`Geo: country source per post ${JSON.stringify(bySource)}`);
+      if (config.geoDebug) {
+        let probed = 0;
+        for (const wrapper of results) {
+          const poiId = wrapper.clockworks?.geo?.poi?.id;
+          if (!poiId || probed >= 3) continue;
+          probed += 1;
+          wrapper.clockworks.geo.debug.locationPage = await probeLocationPage(page, poiId, wrapper.clockworks.geo.poi.name, log);
+        }
+      }
+    }
+
+    // Drop posts made in other countries now that their country is known.
+    if (config.postCountries.length) {
+      // With extractGeo the country comes from the coordinates when the post has them.
+      const countryOf = (wrapper) => wrapper.clockworks?.geo?.countryCode
+        ?? wrapper.clockworks?.locationCreated ?? wrapper.raw?.locationCreated;
+      const kept = results.filter((wrapper) => keepByPostCountry(
+        countryOf(wrapper), config.postCountries, config.keepUnknownPostCountry
+      ));
+      const dropped = results.length - kept.length;
+      const unknown = results.filter((wrapper) => !countryOf(wrapper)).length;
+      results.splice(0, results.length, ...kept);
+      log.info(`Post country filter (${config.postCountries.join('/')}): kept ${kept.length}, dropped ${dropped} made elsewhere`
+        + ` (${unknown} with unknown country ${config.keepUnknownPostCountry ? 'kept' : 'dropped'})`);
+    }
   }
 
   // Every item carries its author's account snapshot: the job's own profile
@@ -1123,6 +1329,7 @@ Actor.main(async () => {
 
   // Parse and validate input
   const config = await parseInput(input);
+  geoDebugOn = config.geoDebug;
   // A bulk 'post' run can carry thousands of jobs - list them individually
   // only for small runs, otherwise just log the count per mode.
   const jobsSummary = config.jobs.length <= 20
@@ -1136,6 +1343,7 @@ Actor.main(async () => {
         ? `, basket posts only (${config.basketScanLimit} basket posts per profile/keyword instead of Max Items` +
           (config.jobs.some((j) => j.mode === 'post') ? '; ignored for postUrls' : '') + ')'
         : '') +
+      (config.postCountries.length ? `, only posts made in ${config.postCountries.join('/')}` : '') +
       (config.downloadSubtitles ? ', subtitles: on' : '') +
       (config.scrapeRelatedSearchWords ? ', related search words: on' : '')
   );

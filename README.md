@@ -78,6 +78,10 @@ of `INPUT_SCHEMA.json` to keep the form focused on what's actually used, but
 | `commentsPerPost` | integer | *(unset, falls back to 20)* | Max comments per post when `includeComments` is on |
 | `commentVideosLimit` | integer | *(unset, falls back to 10)* | How many posts per job get their comments fetched |
 | `enrichPostDetails` | boolean | `false` | Open each post's own page for the page-only fields (`contentCategories`, `locationCreated`, moderation warnings). One extra page load per post |
+| `postCountries` | string[] | `[]` | Keep only posts made in these countries (ISO codes, e.g. `["ID"]`); posts made elsewhere are dropped before the dataset. The country is page-only data, so this also switches on `enrichPostDetails` (one extra fetch per post, ~2 s). Posts outside `dateFrom`/`dateTo` are dropped first, so set a date range to keep it cheap |
+| `keepUnknownPostCountry` | boolean | `true` | With `postCountries`: keep posts whose country could not be read (page fetch failed) instead of dropping them |
+| `extractGeo` | boolean | `false` | Add a `geo` block to every item and `region`/`geo` to `authorProfile` (see [Geo data](#geo-data)). Switches on `enrichPostDetails` and `includeAuthorProfiles` |
+| `geoDebug` | boolean | `false` | With `extractGeo`: return `geo.debug` (every lat/lng pair and place-like field found in the raw TikTok data, plus a probe of the tagged place's page). Research only |
 | `includeReplies` | boolean | `false` | With `includeComments`, also fetch the replies under each comment (nested in `comments[].replies`) |
 | `repliesPerComment` | integer | *(unset, falls back to 10)* | Max replies per comment when `includeReplies` is on |
 | `includeAuthorProfiles` | boolean | `false` | Attach each author's `authorProfile` snapshot to search and post-URL items too (profile jobs always have it). One profile fetch per unique author |
@@ -510,3 +514,16 @@ never leak into the job's results.
 ## License
 
 ISC
+
+## Geo data
+
+`extractGeo` returns `items[].geo`:
+
+| Field | Meaning |
+|---|---|
+| `locationCreated` | Country the post was made in (ISO alpha-2), from the post page |
+| `poi` | The place the creator tagged (name, address, city, GeoNames ids; `countryIso` is the GeoNames country id converted to ISO). Only ~2-3% of posts have one |
+| `coordinates` / `place` | A latitude/longitude pair found anywhere in the raw item and the country + nearest city it resolves to offline (`@rapideditor/country-coder`, `offline-geocode-city`). `null` when TikTok sends none |
+| `countryCode` / `countrySource` | Country used by `postCountries`: coordinates, else `locationCreated`, else the tagged place |
+
+Checked on real data (2026-11-17, 20 posts incl. 12 with a tagged place, plus profiles): TikTok's web pages return **no latitude/longitude** for posts or profiles. The post `poi` has no coordinates and its `/location/...` page answers 404; the profile `user` object has no region or country (only `language`). The reverse-geocoding path is in place and unit-tested, and `geoDebug` reports any coordinate field TikTok adds later. Until then the country filter relies on `locationCreated`.

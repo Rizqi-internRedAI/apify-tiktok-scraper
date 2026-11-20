@@ -157,6 +157,41 @@
       "default": false,
       "editor": "checkbox"
     },
+    "postCountries": {
+      "title": "Only Posts Made In (country codes)",
+      "type": "array",
+      "description": "Keep only posts made in these countries (ISO 3166-1 alpha-2 codes, e.g. ID for Indonesia); posts from anywhere else are dropped before they reach the dataset. TikTok only tells the country on a post's own page, so setting this also turns on 'Enrich Post Details' (one extra page fetch per post, about 2 seconds each). Posts dated outside the date range are dropped first, so combine it with Date From/To to keep the cost down. Leave empty for no filter.",
+      "default": [],
+      "editor": "stringList"
+    },
+    "keepUnknownPostCountry": {
+      "title": "Keep Posts With Unknown Country",
+      "type": "boolean",
+      "description": "With 'Only Posts Made In', a post whose country could not be read (its page failed to load) is kept by default so a throttled page fetch never drops real local posts. Turn off to drop those too.",
+      "default": true,
+      "editor": "checkbox"
+    },
+    "extractGeo": {
+      "title": "Extract Geo",
+      "type": "boolean",
+      "description": "Add a `geo` block to every item: the post country (locationCreated), the coordinates of the post's tagged place when TikTok returns them plus the country and nearest city they resolve to (offline reverse geocoding), the tagged place (poi), and the author's account region (authorProfile.region / authorProfile.geo). Needs the post page and the author's profile page, so it switches on Enrich Post Details and Include Author Profiles (about 2 extra requests per post). With Only Posts Made In, the country in geo.countryCode (coordinates first, then the post country) is the one filtered on.",
+      "default": false,
+      "editor": "checkbox"
+    },
+    "geoDebug": {
+      "title": "Geo Debug",
+      "type": "boolean",
+      "description": "With Extract Geo: also return geo.debug (every latitude/longitude pair found anywhere in the raw TikTok item and every place-like field) so a new TikTok field can be spotted. Larger output; for research runs.",
+      "default": false,
+      "editor": "checkbox"
+    },
+    "placeProbe": {
+      "title": "Place probe (debug)",
+      "type": "array",
+      "description": "With Geo Debug: TikTok place pages to open, as Name-ID (e.g. Mitra-Keluarga-Cikarang-42203860492262907). Saves where the place page keeps its coordinates to the key-value store (PLACE_PROBE).",
+      "editor": "stringList",
+      "items": { "type": "string" }
+    },
     "includeReplies": {
       "title": "Include Replies",
       "type": "boolean",
